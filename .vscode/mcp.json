@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "sndoc": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.venv/bin/sndoc",
+      "args": ["serve"]
+    }
+  }
+}

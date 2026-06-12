@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            binary: dist/sndoc.exe
+            artifact: sndoc-windows-amd64.exe
+          - os: ubuntu-latest
+            binary: dist/sndoc
+            artifact: sndoc-linux-amd64
+          - os: macos-latest
+            binary: dist/sndoc
+            artifact: sndoc-macos-amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      # sndoc pulls in native pieces the old pure-Python CLI did not:
+      #   --include-package-data=sqlite_vec bundles the `vec0` loadable
+      #     extension that sqlite_vec.load() opens at runtime (without it the
+      #     binary cannot search).
+      #   --include-package model2vec/tokenizers/numpy + --follow-imports pull
+      #     in the embedding stack (the ~123 MB model itself is still downloaded
+      #     from Hugging Face on first run, not bundled).
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          uv run python -m nuitka `
+            --onefile `
+            --follow-imports `
+            --include-package=sndoc `
+            --include-package-data=sqlite_vec `
+            --include-package=model2vec `
+            --include-package=tokenizers `
+            --include-package=numpy `
+            --output-dir=dist `
+            --output-filename=sndoc `
+            --assume-yes-for-downloads `
+            sndoc_main.py
+
+      - name: Build binary (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          uv run python -m nuitka \
+            --onefile \
+            --follow-imports \
+            --include-package=sndoc \
+            --include-package-data=sqlite_vec \
+            --include-package=model2vec \
+            --include-package=tokenizers \
+            --include-package=numpy \
+            --output-dir=dist \
+            --output-filename=sndoc \
+            --assume-yes-for-downloads \
+            sndoc_main.py
+
+      # Fail the build if the native-extension bundle is broken instead of
+      # shipping a binary whose search silently doesn't work. `doctor` verifies
+      # sqlite-vec + FTS5 load.
+      - name: Smoke test
+        shell: bash
+        run: |
+          "${{ matrix.binary }}" --help
+          "${{ matrix.binary }}" doctor
+
+      - name: Build installer (Windows only)
+        if: runner.os == 'Windows'
+        run: iscc installer\installer.iss
+
+      - name: Rename binary for upload
+        shell: bash
+        run: cp "${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/${{ matrix.artifact }}
+            ${{ matrix.os == 'windows-latest' && 'dist/sndoc-setup.exe' || '' }}
