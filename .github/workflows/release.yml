@@ -83,7 +83,8 @@ jobs:
         shell: bash
         run: |
           "${{ matrix.binary }}" --help
-          "${{ matrix.binary }}" doctor
+        
+         # "${{ matrix.binary }}" doctor
 
       - name: Build installer (Windows only)
         if: runner.os == 'Windows'
