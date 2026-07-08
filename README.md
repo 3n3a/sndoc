@@ -133,23 +133,44 @@ Use `sndoc update --no-index` to refresh the clone only (skip the re-embed).
 tools (`search_servicenow_docs`, `fetch_servicenow_doc`,
 `fetch_servicenow_doc_by_url`, `list_servicenow_versions`).
 
-**Claude Code:**
+> **Note:** the MCP server fetches doc bodies **live over HTTP** from GitHub
+> (`SNDOC_FETCH_SOURCE=live` by default under `serve`), rather than shelling out
+> to `git show` per request. This keeps fetch reliable on GUI hosts like Claude
+> Desktop — especially on Windows, where a per-request git subprocess can hang on
+> a credential prompt or an inherited stdio pipe. Search is unaffected (it reads
+> the local index). Set `SNDOC_FETCH_SOURCE=local` to force clone-backed reads.
+
+> **Heads up:** MCP hosts spawn the server with their own stripped environment,
+> not your interactive shell's `PATH`. A bare `sndoc` command therefore often
+> fails with `spawn sndoc ENOENT` — the host can't find the executable that
+> `uv tool install` put in `~/.local/bin` (or the Windows installer put in
+> `C:\Program Files (x86)\sndoc`). The fix is to give the host a command it can
+> resolve: an absolute path, or `uv run`.
+
+**Claude Code** — launched from a terminal, so it usually inherits your `PATH`:
 
 ```bash
 claude mcp add sndoc -- sndoc serve
+# If the host can't find it (spawn sndoc ENOENT), pass the absolute path:
+claude mcp add sndoc -- "$(which sndoc)" serve       # macOS/Linux
 ```
 
-**Claude Desktop** — add to `claude_desktop_config.json`:
+**Claude Desktop** — a GUI app; it does **not** inherit your shell `PATH`, so use
+the absolute path (find it with `which sndoc` / `where sndoc`) in
+`claude_desktop_config.json`:
 
-```json
-{
-  "mcpServers": {
-    "sndoc": { "command": "sndoc", "args": ["serve"] }
-  }
-}
+```jsonc
+// macOS/Linux (uv tool install → ~/.local/bin)
+{ "mcpServers": { "sndoc": { "command": "/Users/you/.local/bin/sndoc", "args": ["serve"] } } }
 ```
 
-`.vscode/mcp.json` in this repo is already templated for VS Code.
+```jsonc
+// Windows (installer → C:\Program Files (x86)\sndoc)
+{ "mcpServers": { "sndoc": { "command": "C:\\Program Files (x86)\\sndoc\\sndoc.exe", "args": ["serve"] } } }
+```
+
+`.vscode/mcp.json` in this repo is already templated for VS Code (it uses
+`uv run sndoc serve`, which resolves the tool from the project's synced venv).
 
 ## Claude skill
 

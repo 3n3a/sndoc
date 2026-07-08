@@ -10,6 +10,7 @@ raw markdown over HTTP so reading a doc never churns the working tree.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -28,13 +29,50 @@ from .constants import (
 from .models import VersionInfo
 
 
-def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    """Run a git command inside the local clone, capturing output."""
+# Bound every git call. A hung git raises TimeoutExpired instead of blocking the
+# process forever — the failure mode behind MCP fetch timeouts on Windows.
+GIT_TIMEOUT_S = 30.0
+# Clone pulls a lot; give it plenty of headroom (runs once, at startup).
+GIT_CLONE_TIMEOUT_S = 600.0
+
+# Config overrides prepended to every git invocation. Disable fsmonitor so git
+# never spawns a background daemon that inherits (and holds open) the captured
+# stdout/stderr pipes — on Windows that lingering handle makes subprocess.run
+# block on an EOF that never arrives. `useBuiltinFSMonitor` covers older git.
+_GIT_HARDENING = ("-c", "core.fsmonitor=false", "-c", "core.useBuiltinFSMonitor=false")
+
+
+def _git_env() -> dict[str, str]:
+    """Environment for git that guarantees it never blocks on an interactive
+    prompt (credentials/terminal) — there is no console under an MCP stdio server."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"  # never prompt on the terminal
+    env["GCM_INTERACTIVE"] = "Never"  # Git Credential Manager: no GUI/console prompt
+    env["GIT_OPTIONAL_LOCKS"] = "0"  # skip background lock/refresh work
+    return env
+
+
+def _no_window_flags() -> dict[str, int]:
+    """On Windows, don't pop a console window for the GUI-launched server."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
+def _git(
+    *args: str, check: bool = True, timeout: float = GIT_TIMEOUT_S
+) -> subprocess.CompletedProcess[str]:
+    """Run a git command inside the local clone, capturing output. Hardened so it
+    can never hang on a prompt, an inherited pipe, or an unbounded op."""
     return subprocess.run(
-        ["git", "-C", str(repo_dir()), *args],
+        ["git", *_GIT_HARDENING, "-C", str(repo_dir()), *args],
         check=check,
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=timeout,
+        env=_git_env(),
+        **_no_window_flags(),
     )
 
 
@@ -49,10 +87,14 @@ def clone() -> None:
     Blobs for the checked-out branch are fetched lazily."""
     repo_dir().parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["git", "clone", "--filter=blob:none", GIT_URL, str(repo_dir())],
+        ["git", *_GIT_HARDENING, "clone", "--filter=blob:none", GIT_URL, str(repo_dir())],
         check=True,
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=GIT_CLONE_TIMEOUT_S,
+        env=_git_env(),
+        **_no_window_flags(),
     )
 
 
@@ -216,7 +258,12 @@ def read_doc_from_clone(repo_path: str, branch: str) -> RawDoc | None:
     or an empty file."""
     clean = re.sub(rf"^{MARKDOWN_PREFIX}", "", repo_path)
     ref_path = f"{MARKDOWN_PREFIX}{clean}"
-    out = _git("show", f"origin/{branch}:{ref_path}", check=False)
+    try:
+        out = _git("show", f"origin/{branch}:{ref_path}", check=False)
+    except subprocess.TimeoutExpired:
+        # A wedged git read is treated as a miss so the caller can fall back
+        # (live HTTP) or surface a clean error, rather than hang.
+        return None
     if out.returncode != 0 or not out.stdout.strip():
         return None
     return RawDoc(

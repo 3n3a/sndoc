@@ -3,6 +3,7 @@ URL/path normalization against a dynamic release set."""
 
 from __future__ import annotations
 
+import subprocess
 import types
 
 from sndoc.core import repo
@@ -152,3 +153,37 @@ def test_read_doc_from_clone_empty_file_returns_none(monkeypatch):
 
     monkeypatch.setattr(repo, "_git", fake)
     assert repo.read_doc_from_clone("api/empty.md", "zurich") is None
+
+
+def test_read_doc_from_clone_timeout_returns_none(monkeypatch):
+    """A wedged git read is a miss, not a hang — the root cause of the MCP fetch
+    timeouts on Windows."""
+
+    def fake(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git show", timeout=repo.GIT_TIMEOUT_S)
+
+    monkeypatch.setattr(repo, "_git", fake)
+    assert repo.read_doc_from_clone("api/glide-record.md", "zurich") is None
+
+
+# --- _git hardening (headless-safe git for the MCP stdio server) -----------
+
+def test_git_invocation_is_hardened(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(repo.subprocess, "run", fake_run)
+    repo._git("rev-parse", "HEAD")
+
+    kwargs = captured["kwargs"]
+    # Never block on the inherited MCP stdin; always bound the call.
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert isinstance(kwargs["timeout"], (int, float)) and kwargs["timeout"] > 0
+    # Never prompt for credentials (no console under an MCP server).
+    assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    # No fsmonitor daemon to inherit/hold the captured pipes.
+    assert "core.fsmonitor=false" in captured["argv"]

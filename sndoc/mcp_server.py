@@ -35,8 +35,7 @@ def search_servicenow_docs(query: str) -> str:
         "Fetch a ServiceNow documentation topic as clean Markdown by its `path` "
         "(from a search result). Optionally pass `version` (a release name from "
         "list_servicenow_versions) to read a specific release; defaults to latest. "
-        "Reads from the local docs clone by default; pass `live=true` to read live "
-        "from GitHub instead."
+        "Reads the doc live from GitHub."
     ),
 )
 def fetch_servicenow_doc(
@@ -49,8 +48,8 @@ def fetch_servicenow_doc(
     name="fetch_servicenow_doc_by_url",
     description=(
         "Fetch a ServiceNow documentation topic as clean Markdown, given a "
-        "docs.servicenow.com URL or an 'r/...' reader path. Reads from the local "
-        "docs clone by default; pass `live=true` to read live from GitHub instead."
+        "docs.servicenow.com URL or an 'r/...' reader path. Reads the doc live "
+        "from GitHub."
     ),
 )
 def fetch_servicenow_doc_by_url(url: str, live: bool = False) -> str:
@@ -70,7 +69,14 @@ def list_servicenow_versions() -> str:
 
 def serve() -> None:
     """Ensure the clone + index are ready, then run the stdio transport."""
+    import os
+
     from .state import ensure_ready
+
+    # Claude Desktop (esp. on Windows) can't reliably run a git subprocess per
+    # fetch; read doc bodies live over HTTP so fetch never blocks on `git show`.
+    # Overridable by an explicit SNDOC_FETCH_SOURCE=local.
+    os.environ.setdefault("SNDOC_FETCH_SOURCE", "live")
 
     ensure_ready(sync_worktree=True, need_index=True)
     # stdio transport owns stdout; keep diagnostics on stderr.
