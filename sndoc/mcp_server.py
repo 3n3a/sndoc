@@ -80,5 +80,7 @@ def serve() -> None:
 
     ensure_ready(sync_worktree=True, need_index=True)
     # stdio transport owns stdout; keep diagnostics on stderr.
-    print("sndoc-mcp server ready (stdio).", file=sys.stderr)
+    from .cli import _pkg_version
+
+    print(f"sndoc-mcp {_pkg_version()} server ready (stdio).", file=sys.stderr)
     mcp.run()

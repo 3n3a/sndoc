@@ -29,6 +29,21 @@ class _Settings:
 settings = _Settings()
 
 
+def _pkg_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("sndoc-mcp")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"sndoc {_pkg_version()}")
+        raise typer.Exit()
+
+
 @app.callback()
 def _main(
     data_dir: Optional[str] = typer.Option(
@@ -41,6 +56,14 @@ def _main(
         False,
         "--no-index",
         help="Skip building/rebuilding the index on the auto-update path.",
+    ),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the installed sndoc version and exit.",
+        callback=_version_callback,
+        is_eager=True,
     ),
 ) -> None:
     if data_dir:
@@ -183,6 +206,8 @@ def doctor() -> None:
     """Check the environment: sqlite-vec + FTS5, index, and clone status."""
     from .core import repo
     from . import index as indexer
+
+    typer.echo(f"[ok] sndoc version: {_pkg_version()}")
 
     ok = True
 

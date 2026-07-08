@@ -1,6 +1,6 @@
 [project]
 name = "sndoc-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local-first CLI for ServiceNow product documentation: hybrid search + fetch as Markdown, usable by humans and AI agents. Also exposes an MCP stdio server."
 requires-python = ">=3.12"
 dependencies = [
