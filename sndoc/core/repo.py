@@ -68,7 +68,11 @@ def _git(
         ["git", *_GIT_HARDENING, "-C", str(repo_dir()), *args],
         check=check,
         capture_output=True,
-        text=True,
+        # Docs (and git's own output) are UTF-8. Decode as UTF-8 explicitly rather
+        # than the platform locale — on Windows `text=True` defaults to cp1252,
+        # which raises UnicodeDecodeError on the first non-Latin-1 byte in a doc.
+        encoding="utf-8",
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=timeout,
         env=_git_env(),
@@ -90,7 +94,8 @@ def clone() -> None:
         ["git", *_GIT_HARDENING, "clone", "--filter=blob:none", GIT_URL, str(repo_dir())],
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=GIT_CLONE_TIMEOUT_S,
         env=_git_env(),
@@ -264,7 +269,7 @@ def read_doc_from_clone(repo_path: str, branch: str) -> RawDoc | None:
         # A wedged git read is treated as a miss so the caller can fall back
         # (live HTTP) or surface a clean error, rather than hang.
         return None
-    if out.returncode != 0 or not out.stdout.strip():
+    if out.returncode != 0 or not (out.stdout or "").strip():
         return None
     return RawDoc(
         markdown=out.stdout,

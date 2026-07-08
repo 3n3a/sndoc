@@ -187,3 +187,22 @@ def test_git_invocation_is_hardened(monkeypatch):
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     # No fsmonitor daemon to inherit/hold the captured pipes.
     assert "core.fsmonitor=false" in captured["argv"]
+    # Decode UTF-8 explicitly, not the platform locale (cp1252 on Windows chokes
+    # on non-Latin-1 bytes in a doc and raises UnicodeDecodeError).
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
+def test_git_decodes_utf8_output(monkeypatch):
+    """Real subprocess.run with encoding='utf-8' must round-trip a doc byte
+    (0x9d inside a UTF-8 sequence) that cp1252 cannot decode."""
+    snippet = "GlideRecord — café “quotes”"  # em dash + curly quotes
+
+    def fake_run(argv, **kwargs):
+        raw = snippet.encode("utf-8")
+        decoded = raw.decode(kwargs["encoding"], kwargs["errors"])
+        return types.SimpleNamespace(stdout=decoded, stderr="", returncode=0)
+
+    monkeypatch.setattr(repo.subprocess, "run", fake_run)
+    out = repo._git("show", "origin/zurich:markdown/x.md")
+    assert out.stdout == snippet
