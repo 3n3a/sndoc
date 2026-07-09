@@ -2,8 +2,8 @@
   "servers": {
     "sndoc": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "sndoc", "serve"]
+      "command": "cargo",
+      "args": ["run", "--quiet", "--release", "--", "serve"]
     }
   }
 }

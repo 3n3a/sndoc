@@ -22,38 +22,35 @@ The Windows installer adds `sndoc` to your PATH and can install the Claude skill
 
 ### From source
 
-Uses [uv](https://docs.astral.sh/uv/). Python 3.12+.
+Uses [Rust](https://www.rust-lang.org/) (stable) and a C compiler (for the
+bundled SQLite + sqlite-vec).
 
 ```bash
-uv tool install .        # installs a global `sndoc` command
+cargo install --path .   # installs a global `sndoc` command
 # or, in a checkout:
-uv sync && uv run sndoc --help
+cargo build --release && ./target/release/sndoc --help
 ```
 
-On first run `sndoc` clones the docs repo (a blobless partial clone — cheap) and
-downloads the embedding model (`minishlab/potion-retrieval-32M`, ~123 MB, cached).
-Everything it writes lives under the per-user data dir (`platformdirs`), e.g.
+On first run `sndoc` clones the docs repo (a full clone via
+[gitoxide](https://github.com/GitoxideLabs/gitoxide) — no `git` binary needed)
+and downloads the embedding model (`minishlab/potion-retrieval-32M`, cached).
+Everything it writes lives under the per-user data dir, e.g.
 `~/.local/share/sndoc/` on Linux — override with `--data-dir` or `SNDOC_DATA_DIR`.
 
 ### Build the native binary locally
 
-The release binaries are built with [Nuitka](https://nuitka.net/). To reproduce a
-build locally:
+The release binaries are a single self-contained `cargo` build — the bundled
+SQLite (with FTS5), the `sqlite-vec` `vec0` extension, and the git client
+(gitoxide) are all compiled in, so there is no loadable extension and no `git`
+binary at runtime. The embedding model is **not** bundled — it is downloaded from
+Hugging Face on first run.
 
 ```bash
-uv sync --group dev
-uv run python -m nuitka --onefile --follow-imports \
-  --include-package=sndoc --include-package-data=sqlite_vec \
-  --include-package=model2vec --include-package=tokenizers --include-package=numpy \
-  --output-dir=dist --output-filename=sndoc --assume-yes-for-downloads sndoc_main.py
+cargo build --release        # produces target/release/sndoc[.exe]
 # Windows installer (requires Inno Setup):
 iscc installer\installer.iss
 ```
 
-`--include-package-data=sqlite_vec` is required: it bundles the `vec0` loadable
-extension the search index opens at runtime. The embedding model itself is **not**
-bundled — it is still downloaded from Hugging Face on first run. Produces
-`dist/sndoc[.exe]` and (on Windows) `dist/sndoc-setup.exe`.
 [`.github/workflows/release.yml`](.github/workflows/release.yml) builds all three
 platforms on `v*` tags.
 
@@ -74,10 +71,11 @@ Pass `--json` to any read command for structured output (agent-friendly). Global
 flags `--data-dir` and `--no-index` go before the subcommand
 (`sndoc --no-index update`); `update` also accepts `--no-index` directly.
 
-`fetch`/`fetch-url` read from the **local clone** by default — offline for the latest
-release, and for any other release the blobless clone lazily fetches just the one blob
-it needs (no checkout). Pass `--live` to read live from `raw.githubusercontent.com`
-instead, or set `SNDOC_FETCH_SOURCE=live` to make live the default.
+`fetch`/`fetch-url` read from the **local clone** by default — fully offline for
+every release, since the full clone has all branches' blobs (docs are read
+straight from the git object store, no working-tree checkout). Pass `--live` to
+read live from `raw.githubusercontent.com` instead, or set
+`SNDOC_FETCH_SOURCE=live` to make live the default.
 
 ```bash
 sndoc search "how to query a GlideRecord"
@@ -90,30 +88,34 @@ sndoc list-versions --json
 
 ```
  first run / daily / sndoc update
-   ├─ git clone --filter=blob:none ServiceNowDocs   (blobless: refs + history, lazy blobs)
-   ├─ git fetch (throttled to once/24h on the auto path; forced by `update`)
+   ├─ clone ServiceNowDocs via gitoxide (full clone: all refs + history + blobs, no git binary)
+   ├─ fetch (throttled to once/24h on the auto path; forced by `update`)
    └─ if latest-branch commit != indexed commit → reindex
-         clone(latest) → chunk by heading → embed (model2vec, local) → SQLite (FTS5 + sqlite-vec)
-                                                            │  data dir: index/latest.db + manifest.json
- search ─┐  search.py ── index_store.py (pysqlite3 + sqlite-vec, hybrid RRF)
- fetch  ─┤            └─ embed.py (model2vec query embedding)
- list   ─┘  repo.py ── git refs (versions, newest by commit date) · raw.githubusercontent.com (fetch)
+         read markdown/** from the object store → chunk by heading → embed (model2vec, local)
+                                                → SQLite (FTS5 + sqlite-vec)
+                                                  │  data dir: index/latest.db + manifest.json
+ search ─┐  core/search.rs ── core/index_store.rs (rusqlite + sqlite-vec, hybrid RRF)
+ fetch  ─┤                 └─ core/embed.rs (model2vec-rs query embedding)
+ list   ─┘  core/repo.rs ── gix refs (versions, newest by commit date) · raw.githubusercontent.com (--live)
 ```
 
-- **Index.** On change, the CLI walks every `markdown/**` file on the latest
-  release branch, chunks by heading, embeds each chunk with a **local**
+- **Index.** On change, the CLI reads every `markdown/**` file on the latest
+  release branch straight from the git object store, chunks by heading, embeds
+  each chunk with a **local**
   [model2vec](https://github.com/MinishLab/model2vec) static model
   (`minishlab/potion-retrieval-32M`, 512-dim — a token→vector lookup + mean pool,
-  no transformer forward pass, no API), and builds a SQLite file with an **FTS5**
-  (BM25) table and a **`sqlite-vec`** vector table.
+  no transformer forward pass, no API) via
+  [model2vec-rs](https://github.com/MinishLab/model2vec-rs), and builds a SQLite
+  file with an **FTS5** (BM25) table and a **`sqlite-vec`** vector table.
 - **Search (hybrid).** Embeds the query, runs BM25 + vector KNN, and fuses them
   with **Reciprocal Rank Fusion**. Exact-term queries (`gliderecord`) lean on
   BM25; conceptual ones lean on the vector arm. Results are deduped to the best
   chunk per file.
-- **Fetch & versions.** Markdown is read from `raw.githubusercontent.com` on the
-  requested branch (latest by default) — no working-tree churn. Versions are the
-  clone's release branches, ordered **newest-first by tip commit date** (no
-  hardcoded release list); the most recent is the latest.
+- **Fetch & versions.** Markdown is read from the local clone's object store on
+  the requested branch (latest by default), or from `raw.githubusercontent.com`
+  with `--live`. Versions are the clone's release branches, ordered
+  **newest-first by tip commit date** (no hardcoded release list); the repo's
+  default branch (origin/HEAD) is the latest.
 
 ## Daily refresh (daemon)
 
@@ -133,19 +135,18 @@ Use `sndoc update --no-index` to refresh the clone only (skip the re-embed).
 tools (`search_servicenow_docs`, `fetch_servicenow_doc`,
 `fetch_servicenow_doc_by_url`, `list_servicenow_versions`).
 
-> **Note:** the MCP server fetches doc bodies **live over HTTP** from GitHub
-> (`SNDOC_FETCH_SOURCE=live` by default under `serve`), rather than shelling out
-> to `git show` per request. This keeps fetch reliable on GUI hosts like Claude
-> Desktop — especially on Windows, where a per-request git subprocess can hang on
-> a credential prompt or an inherited stdio pipe. Search is unaffected (it reads
-> the local index). Set `SNDOC_FETCH_SOURCE=local` to force clone-backed reads.
+> **Note:** the MCP server defaults to fetching doc bodies **live over HTTP** from
+> GitHub (`SNDOC_FETCH_SOURCE=live` under `serve`) so a `fetch` tool call never
+> waits on a large clone that hasn't finished yet. Search is unaffected (it reads
+> the local index). Set `SNDOC_FETCH_SOURCE=local` to force clone-backed reads
+> (fully offline once the clone exists).
 
 > **Heads up:** MCP hosts spawn the server with their own stripped environment,
 > not your interactive shell's `PATH`. A bare `sndoc` command therefore often
 > fails with `spawn sndoc ENOENT` — the host can't find the executable that
-> `uv tool install` put in `~/.local/bin` (or the Windows installer put in
+> `cargo install` put in `~/.cargo/bin` (or the Windows installer put in
 > `C:\Program Files (x86)\sndoc`). The fix is to give the host a command it can
-> resolve: an absolute path, or `uv run`.
+> resolve: an absolute path to the binary.
 
 **Claude Code** — launched from a terminal, so it usually inherits your `PATH`:
 
@@ -160,17 +161,14 @@ the absolute path (find it with `which sndoc` / `where sndoc`) in
 `claude_desktop_config.json`:
 
 ```jsonc
-// macOS/Linux (uv tool install → ~/.local/bin)
-{ "mcpServers": { "sndoc": { "command": "/Users/you/.local/bin/sndoc", "args": ["serve"] } } }
+// macOS/Linux (cargo install → ~/.cargo/bin)
+{ "mcpServers": { "sndoc": { "command": "/Users/you/.cargo/bin/sndoc", "args": ["serve"] } } }
 ```
 
 ```jsonc
 // Windows (installer → C:\Program Files (x86)\sndoc)
 { "mcpServers": { "sndoc": { "command": "C:\\Program Files (x86)\\sndoc\\sndoc.exe", "args": ["serve"] } } }
 ```
-
-`.vscode/mcp.json` in this repo is already templated for VS Code (it uses
-`uv run sndoc serve`, which resolves the tool from the project's synced venv).
 
 ## Claude skill
 
@@ -203,24 +201,23 @@ The Windows installer (`sndoc-setup.exe`) can do this for you. Create
 ## Development
 
 ```bash
-uv sync
-uv run pytest          # offline test suite (git/network mocked)
-uv run sndoc doctor    # verify sqlite-vec + FTS5 load
+cargo build
+cargo test                     # offline test suite (no git/network)
+cargo run -- doctor            # verify sqlite-vec + FTS5 load
 ```
 
 ## Layout
 
 ```
-sndoc/cli.py                   — Typer CLI (entry point: `sndoc`)
-sndoc/state.py                 — lifecycle: clone, daily refresh, reindex-on-change
-sndoc/index.py                 — build the search index (chunk → embed → SQLite)
-sndoc/mcp_server.py            — MCP stdio server (FastMCP), shares the core
-sndoc/core/      search, fetch, repo, embed, chunk, index_store, models, format,
-                 constants — git + raw-fetch + hybrid index, no CLI/MCP deps
-tests/                         — pytest suite (offline; git/httpx mocked)
-sndoc_main.py                  — entry point for the Nuitka onefile binary
+src/main.rs                    — clap CLI (entry point: `sndoc`)
+src/state.rs                   — lifecycle: clone, daily refresh, reindex-on-change
+src/index.rs                   — build the search index (chunk → embed → SQLite)
+src/mcp.rs                     — MCP stdio server (rmcp), shares the core
+src/core/      search, fetch, repo, embed, chunk, index_store, models, format,
+               http, constants — git (gitoxide) + raw-fetch + hybrid index, no CLI/MCP deps
 installer/installer.iss        — Windows installer (Inno Setup): PATH + skill + cache cleanup
 .claude/skills/sndoc/SKILL.md  — auto-invoked Claude skill driving the CLI
-.github/workflows/test.yml     — CI: uv sync + pytest
-.github/workflows/release.yml  — CI: 3-platform Nuitka build + Windows installer on v* tags
+.github/workflows/test.yml     — CI: cargo build + test
+.github/workflows/release.yml  — CI: 3-platform cargo build + Windows installer on v* tags
+legacy-python/                 — the previous Python implementation, archived
 ```
