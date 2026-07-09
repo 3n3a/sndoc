@@ -1,5 +1,5 @@
 #define AppName "sndoc"
-#define AppVersion "0.2.0"
+#define AppVersion "0.2.1"
 #define AppPublisher "3n3a"
 #define AppExeName "sndoc.exe"
 ; The Claude skill is now a directory (.claude\skills\sndoc\SKILL.md), not a
@@ -30,7 +30,7 @@ Name: "installskill"; Description: "Install Claude Code skill (~\.claude\skills\
 Name: "deletecache";  Description: "Remove cached data on uninstall ({localappdata}\sndoc)";       GroupDescription: "Uninstall options:"; Flags: unchecked
 
 [Files]
-Source: "..\dist\{#AppExeName}"; DestDir: "{app}";                                Flags: ignoreversion
+Source: "..\target\release\{#AppExeName}"; DestDir: "{app}";                      Flags: ignoreversion
 Source: {#SkillSrc};             DestDir: "{%USERPROFILE}\.claude\skills\sndoc";   Flags: ignoreversion; Tasks: installskill
 
 [Registry]

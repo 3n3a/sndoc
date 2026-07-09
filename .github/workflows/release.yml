@@ -16,75 +16,41 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            binary: dist/sndoc.exe
+            binary: target/release/sndoc.exe
             artifact: sndoc-windows-amd64.exe
           - os: ubuntu-latest
-            binary: dist/sndoc
+            binary: target/release/sndoc
             artifact: sndoc-linux-amd64
           - os: macos-latest
-            binary: dist/sndoc
+            binary: target/release/sndoc
             artifact: sndoc-macos-amd64
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-        with:
-          enable-cache: true
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
-        run: uv sync --group dev
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
-      # sndoc pulls in native pieces the old pure-Python CLI did not:
-      #   --include-package-data=sqlite_vec bundles the `vec0` loadable
-      #     extension that sqlite_vec.load() opens at runtime (without it the
-      #     binary cannot search).
-      #   --include-package model2vec/tokenizers/numpy + --follow-imports pull
-      #     in the embedding stack (the ~123 MB model itself is still downloaded
-      #     from Hugging Face on first run, not bundled).
-      - name: Build binary (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          uv run python -m nuitka `
-            --onefile `
-            --follow-imports `
-            --include-package=sndoc `
-            --include-package-data=sqlite_vec `
-            --include-package=model2vec `
-            --include-package=tokenizers `
-            --include-package=numpy `
-            --output-dir=dist `
-            --output-filename=sndoc `
-            --assume-yes-for-downloads `
-            sndoc_main.py
+      # A single static binary: the bundled SQLite (with FTS5), the sqlite-vec
+      # `vec0` extension, and the git client (gitoxide) are all compiled in — no
+      # loadable extension and no `git` binary at runtime. The ~30 MB embedding
+      # model is still downloaded from Hugging Face on first run, not bundled.
+      - name: Build release binary
+        run: cargo build --release --locked
 
-      - name: Build binary (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          uv run python -m nuitka \
-            --onefile \
-            --follow-imports \
-            --include-package=sndoc \
-            --include-package-data=sqlite_vec \
-            --include-package=model2vec \
-            --include-package=tokenizers \
-            --include-package=numpy \
-            --output-dir=dist \
-            --output-filename=sndoc \
-            --assume-yes-for-downloads \
-            sndoc_main.py
-
-      # Fail the build if the native-extension bundle is broken instead of
-      # shipping a binary whose search silently doesn't work. `doctor` verifies
-      # sqlite-vec + FTS5 load.
+      # Fail the build if the native pieces are broken instead of shipping a
+      # binary whose search silently doesn't work. `doctor` verifies sqlite-vec
+      # + FTS5 load.
       - name: Smoke test
         shell: bash
         run: |
           "${{ matrix.binary }}" --help
-        
-         # "${{ matrix.binary }}" doctor
+          "${{ matrix.binary }}" doctor
 
       - name: Build installer (Windows only)
         if: runner.os == 'Windows'
@@ -92,11 +58,11 @@ jobs:
 
       - name: Rename binary for upload
         shell: bash
-        run: cp "${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+        run: cp "${{ matrix.binary }}" "${{ matrix.artifact }}"
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/${{ matrix.artifact }}
+            ${{ matrix.artifact }}
             ${{ matrix.os == 'windows-latest' && 'dist/sndoc-setup.exe' || '' }}
