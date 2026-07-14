@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
-use crate::core::constants::{state_path, UPDATE_INTERVAL_S};
+use crate::core::constants::{state_path, RECLONE_INTERVAL_S, UPDATE_INTERVAL_S};
 use crate::core::repo;
 use crate::index;
 
@@ -72,12 +72,27 @@ pub fn ensure_ready(
     match refresh_and_sync(no_index, force_update, sync_worktree, need_index) {
         Ok(()) => Ok(()),
         Err(err) if repo::is_corrupt_clone_error(&err) => {
-            log("[sndoc] local clone is incomplete; re-cloning ServiceNowDocs...");
-            repo::reclone().context("re-cloning after detecting an incomplete clone")?;
             let mut state = read_state();
-            state["last_fetch"] = serde_json::json!(now());
-            write_state(&state)?;
-            refresh_and_sync(no_index, force_update, sync_worktree, need_index)
+            let last_reclone = state
+                .get("last_reclone")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            if (now() - last_reclone) > RECLONE_INTERVAL_S {
+                log("[sndoc] local clone is incomplete; re-cloning ServiceNowDocs...");
+                repo::reclone().context("re-cloning after detecting an incomplete clone")?;
+                state["last_fetch"] = serde_json::json!(now());
+                state["last_reclone"] = serde_json::json!(now());
+                write_state(&state)?;
+                refresh_and_sync(no_index, force_update, sync_worktree, need_index)
+            } else {
+                // Re-cloned within the monthly cooldown; a full re-clone is
+                // expensive, so don't repeat it. Continue best-effort from the
+                // existing clone — a real failure will surface at read time.
+                log("[sndoc] local clone still looks incomplete, but it was re-cloned \
+                     recently; continuing with the existing clone (the re-clone will be \
+                     retried after the monthly cooldown).");
+                Ok(())
+            }
         }
         Err(err) => Err(err),
     }
@@ -100,9 +115,19 @@ fn refresh_and_sync(
         .unwrap_or(0.0);
     if force_update || (now() - last_fetch) > UPDATE_INTERVAL_S {
         log("[sndoc] refreshing docs clone...");
-        repo::fetch_updates()?;
-        state["last_fetch"] = serde_json::json!(now());
-        write_state(&state)?;
+        match repo::fetch_updates() {
+            Ok(()) => {
+                state["last_fetch"] = serde_json::json!(now());
+                write_state(&state)?;
+            }
+            // A corrupt/incomplete clone must propagate so ensure_ready can
+            // self-heal (re-clone, subject to the monthly throttle).
+            Err(err) if repo::is_corrupt_clone_error(&err) => return Err(err),
+            // Transient/network failure: keep serving from the existing clone.
+            Err(err) => log(&format!(
+                "[sndoc] refresh failed ({err:#}); continuing with the existing clone."
+            )),
+        }
     }
 
     if !sync_worktree {

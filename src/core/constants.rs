@@ -50,6 +50,11 @@ pub fn embed_model() -> String {
 /// `update` subcommand forces a refresh regardless).
 pub const UPDATE_INTERVAL_S: f64 = 86_400.0; // 24 h
 
+/// Self-heal re-clone throttle. A re-clone is a full download of the whole
+/// docs repo, so after one automatic re-clone we won't attempt another for
+/// this long even if the clone still looks incomplete — at most once a month.
+pub const RECLONE_INTERVAL_S: f64 = 30.0 * 86_400.0; // ~30 days
+
 pub const HTTP_TIMEOUT_S: u64 = 30;
 
 /// Whether docs should be fetched live over HTTP by default instead of from the
