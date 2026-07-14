@@ -1,6 +1,6 @@
 [package]
 name = "sndoc"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Local-first CLI for ServiceNow product documentation: hybrid search + fetch as Markdown, usable by humans and AI agents. Also exposes an MCP stdio server."
 license = "MIT"
