@@ -9,7 +9,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::core::constants::{state_path, UPDATE_INTERVAL_S};
 use crate::core::repo;
@@ -56,14 +56,43 @@ pub fn ensure_ready(
     sync_worktree: bool,
     need_index: bool,
 ) -> Result<()> {
-    let mut state = read_state();
-
     if !repo::is_cloned() {
         log("[sndoc] first run: cloning ServiceNowDocs (this is a one-time setup)...");
         repo::clone()?;
+        let mut state = read_state();
         state["last_fetch"] = serde_json::json!(now());
         write_state(&state)?;
     }
+
+    // Refresh + sync against the clone. If any step fails because the clone is
+    // incomplete/corrupt (missing objects it advertises — e.g. a thin-pack base
+    // lookup during fetch, or peeling a ref during sync), self-heal by
+    // re-cloning once and retrying. A fresh clone gets a self-contained pack,
+    // so its object store is always complete.
+    match refresh_and_sync(no_index, force_update, sync_worktree, need_index) {
+        Ok(()) => Ok(()),
+        Err(err) if repo::is_corrupt_clone_error(&err) => {
+            log("[sndoc] local clone is incomplete; re-cloning ServiceNowDocs...");
+            repo::reclone().context("re-cloning after detecting an incomplete clone")?;
+            let mut state = read_state();
+            state["last_fetch"] = serde_json::json!(now());
+            write_state(&state)?;
+            refresh_and_sync(no_index, force_update, sync_worktree, need_index)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// One pass of the freshness + index logic against the existing clone. Returns
+/// a corrupt-clone error (see [`repo::is_corrupt_clone_error`]) when the local
+/// object store is missing objects, which [`ensure_ready`] recovers from.
+fn refresh_and_sync(
+    no_index: bool,
+    force_update: bool,
+    sync_worktree: bool,
+    need_index: bool,
+) -> Result<()> {
+    let mut state = read_state();
 
     let last_fetch = state
         .get("last_fetch")

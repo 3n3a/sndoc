@@ -41,20 +41,82 @@ pub fn is_cloned() -> bool {
     repo_dir().join(".git").is_dir()
 }
 
-/// Full clone (all refs + history + blobs). No working tree is checked out;
-/// docs are read directly from the object store.
+/// Full clone (all refs + history + blobs) into the default clone dir. No
+/// working tree is checked out; docs are read directly from the object store.
 pub fn clone() -> Result<()> {
-    let dir = repo_dir();
+    clone_into(&repo_dir())
+}
+
+/// Full clone into `dir` (which must not already exist as a repo). The
+/// server's clone pack is self-contained (non-thin), so the resulting object
+/// store is always complete — unlike an incremental fetch's thin pack.
+fn clone_into(dir: &Path) -> Result<()> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let url = git_url();
-    let mut prepare = gix::prepare_clone(url.as_str(), &dir)
+    let mut prepare = gix::prepare_clone(url.as_str(), dir)
         .with_context(|| format!("preparing clone of {url}"))?;
     let (_repo, _outcome) = prepare
         .fetch_only(gix::progress::Discard, not_interrupted())
         .context("cloning ServiceNowDocs")?;
     Ok(())
+}
+
+/// Whether an error indicates the local clone is missing objects it should have
+/// (an incomplete/corrupt clone), as opposed to a network/transport failure.
+/// The same missing-objects state surfaces in more than one place: gix's
+/// thin-pack base lookup during a fetch, or later when a ref is peeled / an
+/// object is read. Matched on gix's error messages rather than by downcasting
+/// through its nested error enums (brittle across versions); these are stable
+/// `thiserror` strings.
+pub fn is_corrupt_clone_error(err: &anyhow::Error) -> bool {
+    let chain = format!("{err:#}");
+    chain.contains("could not be decoded or wasn't found")
+        || chain.contains("could not be extracted")
+        || chain.contains("consume the pack")
+        || chain.contains("could not be found")
+}
+
+/// Replace the clone with a fresh one, atomically. Clones into a sibling temp
+/// dir first and swaps it in only on success, so a failed re-clone (e.g. the
+/// network is down) leaves the existing clone untouched.
+pub fn reclone() -> Result<()> {
+    let dir = repo_dir();
+    let tmp = sibling_with_suffix(&dir, ".reclone-tmp");
+    let old = sibling_with_suffix(&dir, ".old");
+
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp).context("removing stale re-clone temp dir")?;
+    }
+    if let Err(err) = clone_into(&tmp) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(err);
+    }
+
+    // Swap: move the (corrupt) clone aside, move the fresh one in, then delete
+    // the old one best-effort (a Windows lock must not fail the whole refresh).
+    let _ = std::fs::remove_dir_all(&old);
+    if dir.exists() {
+        std::fs::rename(&dir, &old).context("moving old clone aside")?;
+    }
+    std::fs::rename(&tmp, &dir).context("swapping in the fresh clone")?;
+    let _ = std::fs::remove_dir_all(&old);
+    Ok(())
+}
+
+/// A path next to `dir` with an extra suffix on the file name (a sibling, so
+/// the rename swap stays on the same filesystem).
+fn sibling_with_suffix(dir: &Path, suffix: &str) -> std::path::PathBuf {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string());
+    let sibling = format!("{name}{suffix}");
+    match dir.parent() {
+        Some(parent) => parent.join(sibling),
+        None => std::path::PathBuf::from(sibling),
+    }
 }
 
 /// Update all remote-tracking refs from origin.
@@ -418,5 +480,38 @@ mod tests {
             docs_url_for_path("api/glide-record.md"),
             "https://www.servicenow.com/docs/r/api/glide-record"
         );
+    }
+
+    #[test]
+    fn corrupt_clone_error_matches_missing_object_signatures() {
+        // The thin-pack base lookup failure from the reported bug.
+        let thin_pack = anyhow::anyhow!("some error")
+            .context("Failed to consume the pack sent by the remote")
+            .context(
+                "A pack entry could not be extracted: The object abc123 \
+                 could not be decoded or wasn't found",
+            )
+            .context("fetching updates");
+        assert!(is_corrupt_clone_error(&thin_pack));
+
+        // The same missing-objects state surfacing while peeling a ref.
+        let peel = anyhow::anyhow!(
+            "Object ba513f as referred to by \"refs/remotes/origin/x\" could not be found"
+        )
+        .context("peeling refs/remotes/origin/x");
+        assert!(is_corrupt_clone_error(&peel));
+    }
+
+    #[test]
+    fn corrupt_clone_error_ignores_network_failures() {
+        let net = anyhow::anyhow!("failed to connect to github.com: connection refused")
+            .context("connecting to origin");
+        assert!(!is_corrupt_clone_error(&net));
+    }
+
+    #[test]
+    fn sibling_suffix_stays_next_to_target() {
+        let s = sibling_with_suffix(Path::new("/data/sndoc/repo"), ".reclone-tmp");
+        assert_eq!(s, Path::new("/data/sndoc/repo.reclone-tmp"));
     }
 }
