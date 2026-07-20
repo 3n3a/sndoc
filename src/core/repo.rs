@@ -24,7 +24,7 @@ use crate::core::models::VersionInfo;
 /// Branches that exist on the mirror but are not release versions. Excluding
 /// these is not a maintained release allowlist (which is what we're avoiding) —
 /// they're universal non-release names plus the symbolic HEAD alias.
-const NON_RELEASE: &[&str] = &["main", "master", "HEAD", "gh-pages", "origin"];
+const NON_RELEASE: &[&str] = &["main", "master", "HEAD", "gh-pages", "origin", "nofamily", "mobile", "other", "store"];
 
 fn not_interrupted() -> &'static AtomicBool {
     static FLAG: AtomicBool = AtomicBool::new(false);
@@ -155,6 +155,9 @@ fn release_branches_with_time(repo: &gix::Repository) -> Result<Vec<(String, i64
         let short = reference.name().shorten().to_string();
         let name = short.strip_prefix("origin/").unwrap_or(&short).to_string();
         if NON_RELEASE.contains(&name.as_str()) {
+            continue;
+        }
+        if name.as_str().contains("feature/") {
             continue;
         }
         let secs = match reference

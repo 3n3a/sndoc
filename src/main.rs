@@ -16,7 +16,7 @@ use sndoc::{index as indexer, state};
 #[command(
     name = "sndoc",
     about = "ServiceNow documentation search & fetch (CLI + MCP).",
-    disable_version_flag = true,
+    disable_version_flag = false,
     arg_required_else_help = true
 )]
 struct Cli {
