@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
-use sndoc::core::{fetch as docs, format, repo, search};
+use sndoc::core::{constants, fetch as docs, format, repo, search};
 use sndoc::{index as indexer, state};
 
 #[derive(Parser)]
@@ -120,6 +120,13 @@ fn dump<T: Serialize>(v: &T) -> String {
 
 fn short8(commit: &str) -> &str {
     &commit[..commit.len().min(8)]
+}
+
+/// Print a filesystem path with an existence marker, for `doctor`'s paths
+/// section.
+fn path_line(label: &str, p: &std::path::Path) {
+    let mark = if p.exists() { "[ok]" } else { "[..]" };
+    println!("{mark} {label}: {}", p.display());
 }
 
 fn main() {
@@ -269,6 +276,32 @@ fn doctor() -> Result<()> {
         ),
         None => println!("[..] index: not built yet (run `sndoc index`)"),
     }
+
+    println!();
+    println!("paths:");
+    path_line("data dir", &constants::data_dir());
+    path_line("clone", &constants::repo_dir());
+    path_line("index dir", &constants::index_dir());
+    path_line("index db", &constants::index_db_path());
+    path_line("manifest", &constants::manifest_path());
+    path_line("state", &constants::state_path());
+
+    println!();
+    println!("config (env overrides):");
+    println!(
+        "[..] SNDOC_DATA_DIR: {}",
+        std::env::var("SNDOC_DATA_DIR").unwrap_or_else(|_| "(default)".into())
+    );
+    println!("[..] git url: {}", constants::git_url());
+    println!("[..] embed model: {}", constants::embed_model());
+    println!(
+        "[..] fetch source: {}",
+        if constants::fetch_live_default() {
+            "live"
+        } else {
+            "local"
+        }
+    );
 
     if !ok {
         std::process::exit(1);
