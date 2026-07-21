@@ -20,7 +20,14 @@ pub fn github_raw_base() -> String {
     format!("https://raw.githubusercontent.com/{GITHUB_REPO}")
 }
 
+/// Git remote URL for the docs mirror. Overridable with `SNDOC_GIT_URL` (read on
+/// every call, like [`data_dir`]) so tests can point at a local fixture repo.
 pub fn git_url() -> String {
+    if let Ok(override_url) = env::var("SNDOC_GIT_URL") {
+        if !override_url.is_empty() {
+            return override_url;
+        }
+    }
     format!("https://github.com/{GITHUB_REPO}.git")
 }
 

@@ -1,15 +1,26 @@
-//! MCP stdio server: exposes the same capabilities as the CLI subcommands over
-//! stdio via the official Rust MCP SDK (rmcp), reusing the shared core. For use
-//! in Claude Code, Claude Desktop, or the MCP inspector. Run with `sndoc serve`.
+//! MCP server: exposes the same capabilities as the CLI subcommands over
+//! either stdio or Streamable HTTP, via the official Rust MCP SDK (rmcp),
+//! reusing the shared core. Stdio is for Claude Code, Claude Desktop, or the
+//! MCP inspector (`sndoc serve`); HTTP is for running sndoc on a server and
+//! reaching it remotely, gated by a bearer token (`sndoc serve --http`).
 
-use anyhow::Result as AnyResult;
+use std::sync::Arc;
+
+use anyhow::{Context, Result as AnyResult};
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, InitializeResult, ServerCapabilities, ServerInfo};
 use rmcp::transport::stdio;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::core::fetch as docs;
 use crate::core::format::{format_fetch, format_search, format_versions};
@@ -46,8 +57,8 @@ pub struct Sndoc {
     tool_router: ToolRouter<Sndoc>,
 }
 
-/// Run blocking core work off the async executor (gix/rusqlite/model2vec and the
-/// blocking HTTP client all need a non-async thread).
+/// Run blocking core work off the async executor (git2/rusqlite/model2vec and
+/// the blocking HTTP client all need a non-async thread).
 async fn blocking<F>(f: F) -> Result<String, ErrorData>
 where
     F: FnOnce() -> AnyResult<String> + Send + 'static,
@@ -142,14 +153,19 @@ impl ServerHandler for Sndoc {
     }
 }
 
-/// Ensure the clone + index are ready, then run the stdio transport.
-pub fn serve() -> AnyResult<()> {
-    // Claude Desktop (esp. on Windows) can't reliably run a git op per fetch;
-    // read doc bodies live over HTTP so fetch never blocks. Overridable by an
-    // explicit SNDOC_FETCH_SOURCE=local.
+/// Default doc fetch to live-over-HTTP: a git op per fetch can't reliably run
+/// under some MCP clients (Claude Desktop on Windows), and under the HTTP
+/// transport a shared clone shouldn't be read while a background refresh is
+/// fetching into it. Overridable by an explicit `SNDOC_FETCH_SOURCE=local`.
+fn default_fetch_source_to_live() {
     if std::env::var_os("SNDOC_FETCH_SOURCE").is_none() {
         std::env::set_var("SNDOC_FETCH_SOURCE", "live");
     }
+}
+
+/// Ensure the clone + index are ready, then run the stdio transport.
+pub fn serve() -> AnyResult<()> {
+    default_fetch_source_to_live();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -166,4 +182,83 @@ pub fn serve() -> AnyResult<()> {
         service.waiting().await?;
         Ok::<(), anyhow::Error>(())
     })
+}
+
+/// Ensure the clone + index are ready, then run the Streamable HTTP transport
+/// at `addr` (e.g. `127.0.0.1:8080`), gated by a bearer token on every
+/// request. sndoc only speaks plain HTTP — put a reverse proxy in front for
+/// TLS when exposing this beyond localhost.
+pub fn serve_http(addr: &str, token: String) -> AnyResult<()> {
+    default_fetch_source_to_live();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        tokio::task::spawn_blocking(|| crate::state::ensure_ready(false, false, true, true))
+            .await??;
+
+        let ct = CancellationToken::new();
+        let mcp_service: StreamableHttpService<Sndoc, LocalSessionManager> =
+            StreamableHttpService::new(
+                || Ok(Sndoc::new()),
+                LocalSessionManager::default().into(),
+                StreamableHttpServerConfig::default()
+                    .with_cancellation_token(ct.child_token())
+                    // rmcp's Host allow-list defends a locally-run server
+                    // against DNS rebinding; behind a reverse proxy the
+                    // inbound Host is the public domain, not this bind
+                    // address, so the check would reject legitimate traffic.
+                    // The bearer token below is what actually gates access.
+                    .disable_allowed_hosts(),
+            );
+
+        let app = axum::Router::new()
+            .nest_service("/mcp", mcp_service)
+            .layer(middleware::from_fn_with_state(
+                Arc::new(token),
+                require_bearer_token,
+            ));
+
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("binding {addr}"))?;
+        eprintln!(
+            "sndoc-mcp {} server ready (http, http://{addr}/mcp).",
+            env!("CARGO_PKG_VERSION")
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                ct.cancel();
+            })
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+/// Reject any request without an `Authorization: Bearer <token>` header
+/// matching the configured token.
+async fn require_bearer_token(
+    State(token): State<Arc<String>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let provided = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match provided {
+        Some(provided) if constant_time_eq(provided, &token) => Ok(next.run(request).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+/// Byte comparison that doesn't short-circuit on the first mismatching byte
+/// (it still leaks the token length via the initial size check, which isn't
+/// worth avoiding for a single bearer token).
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

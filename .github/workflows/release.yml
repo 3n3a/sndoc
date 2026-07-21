@@ -36,10 +36,26 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # git2's `vendored-libgit2`/`vendored-openssl` features compile libgit2
+      # (and OpenSSL on Linux) from source at build time, which needs cmake
+      # and a C compiler. GitHub-hosted runners normally ship both already;
+      # this is just a defensive check in case a runner image ever doesn't.
+      - name: Ensure cmake is available (git2's vendored libgit2 needs it)
+        shell: bash
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            case "${{ runner.os }}" in
+              Linux) sudo apt-get update && sudo apt-get install -y cmake ;;
+              macOS) brew install cmake ;;
+              Windows) choco install cmake --no-progress ;;
+            esac
+          fi
+
       # A single static binary: the bundled SQLite (with FTS5), the sqlite-vec
-      # `vec0` extension, and the git client (gitoxide) are all compiled in — no
-      # loadable extension and no `git` binary at runtime. The ~30 MB embedding
-      # model is still downloaded from Hugging Face on first run, not bundled.
+      # `vec0` extension, and the git client (libgit2, vendored via git2) are
+      # all compiled in — no loadable extension and no `git` binary at
+      # runtime. The ~30 MB embedding model is still downloaded from Hugging
+      # Face on first run, not bundled.
       - name: Build release binary
         run: cargo build --release --locked
 

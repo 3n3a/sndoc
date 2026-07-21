@@ -14,6 +14,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Ensure cmake is available (git2's vendored libgit2 needs it)
+        shell: bash
+        run: command -v cmake >/dev/null || (sudo apt-get update && sudo apt-get install -y cmake)
       - name: Build
         run: cargo build --locked
       - name: Test

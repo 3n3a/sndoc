@@ -1,4 +1,4 @@
-//! Git access to the local ServiceNowDocs clone (via gitoxide — no `git`
+//! Git access to the local ServiceNowDocs clone (via libgit2 / `git2` — no `git`
 //! binary), plus raw HTTP fetch for on-demand docs. Branches = release versions.
 //!
 //! The CLI keeps a full clone under [`repo_dir`]: all branch refs, history, and
@@ -10,9 +10,9 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result};
+use git2::{AutotagOption, ErrorClass, ErrorCode, FetchOptions, ObjectType, Remote, Repository};
 use regex::Regex;
 
 use crate::core::constants::{
@@ -26,13 +26,8 @@ use crate::core::models::VersionInfo;
 /// they're universal non-release names plus the symbolic HEAD alias.
 const NON_RELEASE: &[&str] = &["main", "master", "HEAD", "gh-pages", "origin", "nofamily", "mobile", "other", "store"];
 
-fn not_interrupted() -> &'static AtomicBool {
-    static FLAG: AtomicBool = AtomicBool::new(false);
-    &FLAG
-}
-
-fn open() -> Result<gix::Repository> {
-    gix::open(repo_dir()).context("opening local clone")
+fn open() -> Result<Repository> {
+    Repository::open(repo_dir()).context("opening local clone")
 }
 
 // --- clone lifecycle ------------------------------------------------------
@@ -47,35 +42,75 @@ pub fn clone() -> Result<()> {
     clone_into(&repo_dir())
 }
 
-/// Full clone into `dir` (which must not already exist as a repo). The
-/// server's clone pack is self-contained (non-thin), so the resulting object
-/// store is always complete — unlike an incremental fetch's thin pack.
+/// Full clone into `dir` (which must not already exist as a repo).
 fn clone_into(dir: &Path) -> Result<()> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let url = git_url();
-    let mut prepare = gix::prepare_clone(url.as_str(), dir)
-        .with_context(|| format!("preparing clone of {url}"))?;
-    let (_repo, _outcome) = prepare
-        .fetch_only(gix::progress::Discard, not_interrupted())
-        .context("cloning ServiceNowDocs")?;
+    let repo = Repository::init(dir)
+        .with_context(|| format!("initializing repo at {}", dir.display()))?;
+    let mut remote = repo
+        .remote("origin", &url)
+        .with_context(|| format!("adding origin remote {url}"))?;
+    fetch_all_branches(&mut remote).context("cloning ServiceNowDocs")?;
+    update_origin_head(&repo, &remote);
     Ok(())
 }
 
-/// Whether an error indicates the local clone is missing objects it should have
-/// (an incomplete/corrupt clone), as opposed to a network/transport failure.
-/// The same missing-objects state surfaces in more than one place: gix's
-/// thin-pack base lookup during a fetch, or later when a ref is peeled / an
-/// object is read. Matched on gix's error messages rather than by downcasting
-/// through its nested error enums (brittle across versions); these are stable
-/// `thiserror` strings.
+/// Fetch every release branch from `origin` into `refs/remotes/origin/*`. Used
+/// for both the initial clone and later refreshes: unlike gitoxide's plain
+/// incremental fetch, libgit2's index-pack resolves thin-pack delta bases
+/// against the local object store, so a fetch never leaves an incomplete pack
+/// behind — there is no separate "full clone" negotiation needed.
+fn fetch_all_branches(remote: &mut Remote<'_>) -> Result<()> {
+    let mut opts = FetchOptions::new();
+    opts.download_tags(AutotagOption::None);
+    remote
+        .fetch(&["+refs/heads/*:refs/remotes/origin/*"], Some(&mut opts), None)
+        .context("fetching from origin")?;
+    Ok(())
+}
+
+/// Point `refs/remotes/origin/HEAD` at the remote's default branch (mirrors
+/// what a real `git clone` sets up), so [`default_branch`] keeps working.
+/// Best-effort: if the remote didn't advertise one, callers fall back to the
+/// newest branch by commit date.
+fn update_origin_head(repo: &Repository, remote: &Remote<'_>) {
+    let Some(target) = remote
+        .default_branch()
+        .ok()
+        .and_then(|buf| buf.as_str().ok().map(str::to_string))
+        .and_then(|r| {
+            r.strip_prefix("refs/heads/")
+                .map(|b| format!("refs/remotes/origin/{b}"))
+        })
+    else {
+        return;
+    };
+    let _ = repo.reference_symbolic(
+        "refs/remotes/origin/HEAD",
+        &target,
+        true,
+        "sndoc: set origin/HEAD",
+    );
+}
+
+/// Whether an error indicates the local clone is missing objects it should
+/// have (an incomplete/corrupt object store), as opposed to a network/
+/// transport failure. libgit2 reports this as a `NotFound` error in the
+/// ODB/object/tree/indexer class when peeling a ref or reading a blob whose
+/// target object isn't present locally.
 pub fn is_corrupt_clone_error(err: &anyhow::Error) -> bool {
-    let chain = format!("{err:#}");
-    chain.contains("could not be decoded or wasn't found")
-        || chain.contains("could not be extracted")
-        || chain.contains("consume the pack")
-        || chain.contains("could not be found")
+    err.chain().any(|cause| {
+        cause.downcast_ref::<git2::Error>().is_some_and(|e| {
+            e.code() == ErrorCode::NotFound
+                && matches!(
+                    e.class(),
+                    ErrorClass::Odb | ErrorClass::Object | ErrorClass::Tree | ErrorClass::Indexer
+                )
+        })
+    })
 }
 
 /// Replace the clone with a fresh one, atomically. Clones into a sibling temp
@@ -122,53 +157,40 @@ fn sibling_with_suffix(dir: &Path, suffix: &str) -> std::path::PathBuf {
 /// Update all remote-tracking refs from origin.
 pub fn fetch_updates() -> Result<()> {
     let repo = open()?;
-    let remote = repo
-        .find_remote("origin")
-        .context("finding origin remote")?;
-    let connection = remote
-        .connect(gix::remote::Direction::Fetch)
-        .context("connecting to origin")?;
-    let prepare = connection
-        .prepare_fetch(gix::progress::Discard, gix::remote::ref_map::Options::default())
-        .context("preparing fetch")?;
-    prepare
-        .receive(gix::progress::Discard, not_interrupted())
-        .context("fetching updates")?;
+    let mut remote = repo.find_remote("origin").context("finding origin remote")?;
+    fetch_all_branches(&mut remote).context("fetching updates")?;
+    update_origin_head(&repo, &remote);
     Ok(())
 }
 
 // --- branches / versions --------------------------------------------------
 
 /// Release branch names with their tip committer time (epoch seconds).
-fn release_branches_with_time(repo: &gix::Repository) -> Result<Vec<(String, i64)>> {
-    let platform = repo.references().context("listing references")?;
-    let iter = platform
-        .prefixed(b"refs/remotes/origin/".as_ref())
+fn release_branches_with_time(repo: &Repository) -> Result<Vec<(String, i64)>> {
+    let refs = repo
+        .references_glob("refs/remotes/origin/*")
         .context("iterating remote refs")?;
     let mut out: Vec<(String, i64)> = Vec::new();
-    for reference in iter {
+    for reference in refs {
         let reference = match reference {
             Ok(r) => r,
             Err(_) => continue,
         };
         // short name like "origin/zurich"; strip the remote prefix.
-        let short = reference.name().shorten().to_string();
-        let name = short.strip_prefix("origin/").unwrap_or(&short).to_string();
+        let short = match reference.shorthand() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let name = short.strip_prefix("origin/").unwrap_or(short).to_string();
         if NON_RELEASE.contains(&name.as_str()) {
             continue;
         }
-        if name.as_str().contains("feature/") {
+        if name.contains("feature/") {
             continue;
         }
-        let secs = match reference
-            .into_fully_peeled_id()
-            .ok()
-            .and_then(|id| id.object().ok())
-            .and_then(|obj| obj.try_into_commit().ok())
-            .and_then(|commit| commit.time().ok())
-        {
-            Some(t) => t.seconds,
-            None => continue,
+        let secs = match reference.peel_to_commit() {
+            Ok(commit) => commit.time().seconds(),
+            Err(_) => continue,
         };
         out.push((name, secs));
     }
@@ -176,7 +198,7 @@ fn release_branches_with_time(repo: &gix::Repository) -> Result<Vec<(String, i64
 }
 
 /// Release branch names, newest tip-commit first. No hardcoded release list.
-fn branches_by_date(repo: &gix::Repository) -> Vec<String> {
+fn branches_by_date(repo: &Repository) -> Vec<String> {
     let mut with_time = release_branches_with_time(repo).unwrap_or_default();
     // Newest first; ties broken by name for determinism.
     with_time.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -185,16 +207,14 @@ fn branches_by_date(repo: &gix::Repository) -> Vec<String> {
 
 /// The release the repo's default branch (origin/HEAD) points at. ServiceNow
 /// keeps this at the current GA release, so it's the authoritative "latest".
-fn default_branch(repo: &gix::Repository) -> Option<String> {
+fn default_branch(repo: &Repository) -> Option<String> {
     let reference = repo.find_reference("refs/remotes/origin/HEAD").ok()?;
-    if let gix::refs::TargetRef::Symbolic(name) = reference.target() {
-        let full = name.as_bstr().to_string();
-        let branch = full.strip_prefix("refs/remotes/origin/")?;
-        if !NON_RELEASE.contains(&branch) {
-            return Some(branch.to_string());
-        }
+    let target = reference.symbolic_target().ok().flatten()?;
+    let branch = target.strip_prefix("refs/remotes/origin/")?;
+    if NON_RELEASE.contains(&branch) {
+        return None;
     }
-    None
+    Some(branch.to_string())
 }
 
 /// Set of release branch names (for version validation).
@@ -254,27 +274,35 @@ pub fn list_versions() -> Vec<VersionInfo> {
 }
 
 fn collect_markdown(
-    repo: &gix::Repository,
-    tree: &gix::Tree,
+    repo: &Repository,
+    tree: &git2::Tree<'_>,
     prefix: &str,
     out: &mut Vec<(String, String)>,
 ) -> Result<()> {
     for entry in tree.iter() {
-        let entry = entry?;
-        let name = entry.filename().to_string();
+        let name = entry.name().context("reading tree entry name")?.to_string();
         let full = if prefix.is_empty() {
             name.clone()
         } else {
             format!("{prefix}/{name}")
         };
-        let mode = entry.mode();
-        if mode.is_tree() {
-            let subtree = repo.find_object(entry.oid())?.try_into_tree()?;
-            collect_markdown(repo, &subtree, &full, out)?;
-        } else if mode.is_blob() && name.ends_with(".md") {
-            let obj = repo.find_object(entry.oid())?;
-            let content = String::from_utf8_lossy(&obj.data).into_owned();
-            out.push((full, content));
+        match entry.kind() {
+            Some(ObjectType::Tree) => {
+                let object = entry.to_object(repo).context("loading subtree")?;
+                let subtree = object
+                    .into_tree()
+                    .map_err(|_| anyhow::anyhow!("tree entry {full} is not a tree"))?;
+                collect_markdown(repo, &subtree, &full, out)?;
+            }
+            Some(ObjectType::Blob) if name.ends_with(".md") => {
+                let object = entry.to_object(repo).context("loading blob")?;
+                let blob = object
+                    .into_blob()
+                    .map_err(|_| anyhow::anyhow!("tree entry {full} is not a blob"))?;
+                let content = String::from_utf8_lossy(blob.content()).into_owned();
+                out.push((full, content));
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -289,17 +317,19 @@ pub fn read_all_markdown(branch: &str) -> Result<Vec<(String, String)>> {
     let commit = repo
         .find_reference(&refname)
         .with_context(|| format!("finding {refname}"))?
-        .into_fully_peeled_id()?
-        .object()?
-        .try_into_commit()?;
-    let tree = commit.tree()?;
-    let md_entry = tree.lookup_entry_by_path(Path::new(
-        MARKDOWN_PREFIX.trim_end_matches('/'),
-    ))?;
-    let md_tree = match md_entry {
-        Some(e) => e.object()?.try_into_tree()?,
-        None => return Ok(Vec::new()),
+        .peel_to_commit()
+        .with_context(|| format!("peeling {refname}"))?;
+    let tree = commit.tree().context("reading commit tree")?;
+    let md_entry = match tree.get_path(Path::new(MARKDOWN_PREFIX.trim_end_matches('/'))) {
+        Ok(entry) => entry,
+        Err(e) if e.code() == ErrorCode::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).context("looking up markdown/ tree entry"),
     };
+    let md_tree = md_entry
+        .to_object(&repo)
+        .context("loading markdown/ tree")?
+        .into_tree()
+        .map_err(|_| anyhow::anyhow!("markdown/ is not a tree"))?;
     let mut out: Vec<(String, String)> = Vec::new();
     collect_markdown(&repo, &md_tree, "", &mut out)?;
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -310,12 +340,12 @@ pub fn read_all_markdown(branch: &str) -> Result<Vec<(String, String)>> {
 pub fn branch_tip_commit(branch: &str) -> Result<String> {
     let repo = open()?;
     let refname = format!("refs/remotes/origin/{branch}");
-    let id = repo
+    let commit = repo
         .find_reference(&refname)
         .with_context(|| format!("finding {refname}"))?
-        .into_fully_peeled_id()
+        .peel_to_commit()
         .with_context(|| format!("peeling {refname}"))?;
-    Ok(id.to_hex().to_string())
+    Ok(commit.id().to_string())
 }
 
 // --- path / url helpers ---------------------------------------------------
@@ -405,19 +435,12 @@ pub fn read_doc_from_clone(repo_path: &str, branch: &str) -> Option<RawDoc> {
 
     let repo = open().ok()?;
     let refname = format!("refs/remotes/origin/{branch}");
-    let commit = repo
-        .find_reference(&refname)
-        .ok()?
-        .into_fully_peeled_id()
-        .ok()?
-        .object()
-        .ok()?
-        .try_into_commit()
-        .ok()?;
+    let commit = repo.find_reference(&refname).ok()?.peel_to_commit().ok()?;
     let tree = commit.tree().ok()?;
-    let entry = tree.lookup_entry_by_path(Path::new(&ref_path)).ok()??;
-    let object = entry.object().ok()?;
-    let markdown = String::from_utf8_lossy(&object.data).into_owned();
+    let entry = tree.get_path(Path::new(&ref_path)).ok()?;
+    let object = entry.to_object(&repo).ok()?;
+    let blob = object.into_blob().ok()?;
+    let markdown = String::from_utf8_lossy(blob.content()).into_owned();
     if markdown.trim().is_empty() {
         return None;
     }
@@ -487,29 +510,39 @@ mod tests {
 
     #[test]
     fn corrupt_clone_error_matches_missing_object_signatures() {
-        // The thin-pack base lookup failure from the reported bug.
-        let thin_pack = anyhow::anyhow!("some error")
-            .context("Failed to consume the pack sent by the remote")
-            .context(
-                "A pack entry could not be extracted: The object abc123 \
-                 could not be decoded or wasn't found",
-            )
-            .context("fetching updates");
-        assert!(is_corrupt_clone_error(&thin_pack));
+        // A missing blob discovered while reading a doc from an incomplete clone.
+        let odb_miss = git2::Error::new(
+            ErrorCode::NotFound,
+            ErrorClass::Odb,
+            "the object could not be found",
+        );
+        let wrapped = anyhow::Error::new(odb_miss).context("reading doc from clone");
+        assert!(is_corrupt_clone_error(&wrapped));
 
-        // The same missing-objects state surfacing while peeling a ref.
-        let peel = anyhow::anyhow!(
-            "Object ba513f as referred to by \"refs/remotes/origin/x\" could not be found"
-        )
-        .context("peeling refs/remotes/origin/x");
-        assert!(is_corrupt_clone_error(&peel));
+        // The same missing-objects state surfacing while peeling a ref's tree.
+        let tree_miss = git2::Error::new(
+            ErrorCode::NotFound,
+            ErrorClass::Tree,
+            "the tree object could not be found",
+        );
+        let wrapped = anyhow::Error::new(tree_miss).context("peeling refs/remotes/origin/x");
+        assert!(is_corrupt_clone_error(&wrapped));
     }
 
     #[test]
     fn corrupt_clone_error_ignores_network_failures() {
-        let net = anyhow::anyhow!("failed to connect to github.com: connection refused")
-            .context("connecting to origin");
-        assert!(!is_corrupt_clone_error(&net));
+        let net_err = git2::Error::new(
+            ErrorCode::GenericError,
+            ErrorClass::Net,
+            "failed to connect to github.com: connection refused",
+        );
+        let wrapped = anyhow::Error::new(net_err).context("connecting to origin");
+        assert!(!is_corrupt_clone_error(&wrapped));
+
+        // A non-git2 error (e.g. filesystem) must never match.
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let wrapped = anyhow::Error::new(io_err).context("creating repo dir");
+        assert!(!is_corrupt_clone_error(&wrapped));
     }
 
     #[test]

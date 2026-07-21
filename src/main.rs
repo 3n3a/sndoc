@@ -5,7 +5,7 @@
 //! refreshes daily and reindexes when the docs change. The same capabilities
 //! are available over MCP via `sndoc serve`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
@@ -97,8 +97,19 @@ enum Command {
         #[arg(long = "no-index")]
         no_index: bool,
     },
-    /// Run the MCP stdio server (for Claude Code / Desktop / inspector).
-    Serve,
+    /// Run the MCP server: stdio by default (for Claude Code / Desktop /
+    /// inspector), or Streamable HTTP when `--http` is given (for running
+    /// sndoc on a server and reaching it remotely). HTTP requires `--token`
+    /// and is bearer-token gated; put a reverse proxy in front for TLS.
+    Serve {
+        /// Bind address for the Streamable HTTP transport, e.g.
+        /// 127.0.0.1:8080. Omit to serve over stdio instead.
+        #[arg(long, env = "SNDOC_HTTP_ADDR")]
+        http: Option<String>,
+        /// Bearer token required on every HTTP request. Required with --http.
+        #[arg(long, env = "SNDOC_HTTP_TOKEN")]
+        token: Option<String>,
+    },
     /// Check the environment: sqlite-vec + FTS5, index, and clone status.
     Doctor,
 }
@@ -207,9 +218,17 @@ fn run(cli: &Cli) -> Result<()> {
             state::ensure_ready(*cmd_no_index || no_index, true, true, false)?;
             println!("Update complete.");
         }
-        Command::Serve => {
-            sndoc::mcp::serve()?;
-        }
+        Command::Serve { http, token } => match http {
+            Some(addr) => {
+                let token = token.clone().context(
+                    "--http requires --token (or SNDOC_HTTP_TOKEN) to authenticate requests",
+                )?;
+                sndoc::mcp::serve_http(addr, token)?;
+            }
+            None => {
+                sndoc::mcp::serve()?;
+            }
+        },
         Command::Doctor => {
             return doctor();
         }

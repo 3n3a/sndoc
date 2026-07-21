@@ -6,7 +6,8 @@ humans and AI agents. The single source of truth is the
 [`ServiceNow/ServiceNowDocs`](https://github.com/ServiceNow/ServiceNowDocs)
 GitHub mirror, which the CLI clones on first run, refreshes daily, and reindexes
 whenever the docs change. The same capabilities are also exposed over **MCP**
-(`sndoc serve`) for use in Claude Code / Desktop.
+(`sndoc serve`) for use in Claude Code / Desktop, or remotely over Streamable
+HTTP (`sndoc serve --http`) for claude.ai/Enterprise custom connectors.
 
 ## Install
 
@@ -22,8 +23,8 @@ The Windows installer adds `sndoc` to your PATH and can install the Claude skill
 
 ### From source
 
-Uses [Rust](https://www.rust-lang.org/) (stable) and a C compiler (for the
-bundled SQLite + sqlite-vec).
+Uses [Rust](https://www.rust-lang.org/) (stable), a C compiler, and `cmake`
+(for the bundled SQLite + sqlite-vec, and for git2's vendored libgit2 build).
 
 ```bash
 cargo install --path .   # installs a global `sndoc` command
@@ -32,8 +33,9 @@ cargo build --release && ./target/release/sndoc --help
 ```
 
 On first run `sndoc` clones the docs repo (a full clone via
-[gitoxide](https://github.com/GitoxideLabs/gitoxide) — no `git` binary needed)
-and downloads the embedding model (`minishlab/potion-retrieval-32M`, cached).
+[libgit2](https://libgit2.org/) — vendored in via the [`git2`](https://github.com/rust-lang/git2-rs)
+crate, so no `git` binary is needed) and downloads the embedding model
+(`minishlab/potion-retrieval-32M`, cached).
 Everything it writes lives under the per-user data dir, e.g.
 `~/.local/share/sndoc/` on Linux — override with `--data-dir` or `SNDOC_DATA_DIR`.
 
@@ -41,9 +43,11 @@ Everything it writes lives under the per-user data dir, e.g.
 
 The release binaries are a single self-contained `cargo` build — the bundled
 SQLite (with FTS5), the `sqlite-vec` `vec0` extension, and the git client
-(gitoxide) are all compiled in, so there is no loadable extension and no `git`
-binary at runtime. The embedding model is **not** bundled — it is downloaded from
-Hugging Face on first run.
+(libgit2, vendored via `git2`) are all compiled in, so there is no loadable
+extension and no `git` binary at runtime. Building from source needs `cmake`
+on `PATH` (libgit2's vendored build uses it); the release binaries themselves
+don't. The embedding model is **not** bundled — it is downloaded from Hugging
+Face on first run.
 
 ```bash
 cargo build --release        # produces target/release/sndoc[.exe]
@@ -64,7 +68,7 @@ platforms on `v*` tags.
 | `sndoc list-versions [--json]` | Available release versions, newest first (latest flagged) |
 | `sndoc index [--branch <release>] [--force]` | Build/rebuild the search index from the local clone |
 | `sndoc update [--no-index]` | Refresh the clone and reindex on change — the cron/daemon entry point |
-| `sndoc serve` | Run the MCP stdio server (same capabilities, for AI agents) |
+| `sndoc serve [--http <addr> --token <token>]` | Run the MCP server: stdio by default, or Streamable HTTP (bearer-token gated) when `--http` is given |
 | `sndoc doctor` | Check sqlite-vec + FTS5, the index, and clone status |
 
 Pass `--json` to any read command for structured output (agent-friendly). Global
@@ -88,7 +92,7 @@ sndoc list-versions --json
 
 ```
  first run / daily / sndoc update
-   ├─ clone ServiceNowDocs via gitoxide (full clone: all refs + history + blobs, no git binary)
+   ├─ clone ServiceNowDocs via libgit2/git2 (full clone: all refs + history + blobs, no git binary)
    ├─ fetch (throttled to once/24h on the auto path; forced by `update`)
    └─ if latest-branch commit != indexed commit → reindex
          read markdown/** from the object store → chunk by heading → embed (model2vec, local)
@@ -96,7 +100,7 @@ sndoc list-versions --json
                                                   │  data dir: index/latest.db + manifest.json
  search ─┐  core/search.rs ── core/index_store.rs (rusqlite + sqlite-vec, hybrid RRF)
  fetch  ─┤                 └─ core/embed.rs (model2vec-rs query embedding)
- list   ─┘  core/repo.rs ── gix refs (versions, newest by commit date) · raw.githubusercontent.com (--live)
+ list   ─┘  core/repo.rs ── libgit2 refs (versions, newest by commit date) · raw.githubusercontent.com (--live)
 ```
 
 - **Index.** On change, the CLI reads every `markdown/**` file on the latest
@@ -170,6 +174,47 @@ the absolute path (find it with `which sndoc` / `where sndoc`) in
 { "mcpServers": { "sndoc": { "command": "C:\\Program Files (x86)\\sndoc\\sndoc.exe", "args": ["serve"] } } }
 ```
 
+### Remote MCP over HTTP
+
+To run `sndoc` on a server and reach it remotely (Claude Code, Claude Desktop,
+or a claude.ai/Enterprise custom connector) instead of spawning it locally over
+stdio, use `--http`. Every request must carry a bearer token — there is no
+transport-level TLS, so put a reverse proxy in front for HTTPS:
+
+```bash
+sndoc serve --http 127.0.0.1:8080 --token <a-long-random-secret>
+# or via env instead of flags: SNDOC_HTTP_ADDR / SNDOC_HTTP_TOKEN
+```
+
+The server listens for [Streamable HTTP](https://modelcontextprotocol.io/) at
+`/mcp` (e.g. `http://127.0.0.1:8080/mcp`) and rejects any request without a
+matching `Authorization: Bearer <token>` header. It binds plain HTTP on
+purpose — terminate TLS in front of it:
+
+```
+Claude ──HTTPS──▶ reverse proxy (Caddy/nginx, cert)  ──HTTP──▶  sndoc serve --http 127.0.0.1:8080
+```
+
+A minimal Caddy config (automatic HTTPS via Let's Encrypt):
+
+```caddyfile
+sndoc.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Connect from **Claude Code**:
+
+```bash
+claude mcp add --transport http sndoc https://sndoc.example.com/mcp \
+  --header "Authorization: Bearer <a-long-random-secret>"
+```
+
+Connect from **claude.ai** (Settings → Connectors → Add custom connector):
+enter the `https://sndoc.example.com/mcp` URL, then add the same
+`Authorization: Bearer <token>` header under the connector's request-headers
+option.
+
 ## Claude skill
 
 `.claude/skills/sndoc/SKILL.md` is an auto-invoked skill that tells Claude to reach
@@ -195,14 +240,19 @@ The Windows installer (`sndoc-setup.exe`) can do this for you. Create
 | Var | Default | Notes |
 | --- | --- | --- |
 | `SNDOC_DATA_DIR` | platform data dir | Where the clone, index, and state live (also `--data-dir`) |
+| `SNDOC_GIT_URL` | `https://github.com/ServiceNow/ServiceNowDocs.git` | Override the git remote (e.g. a mirror, or a local fixture for tests) |
 | `SNDOC_EMBED_MODEL` | `minishlab/potion-retrieval-32M` | model2vec model (512-dim); must match between index build and query |
 | `SNDOC_FETCH_SOURCE` | `local` | `local` reads docs from the clone (offline-capable); `live` reads from `raw.githubusercontent.com`. Per-command override: `--live` |
+| `SNDOC_HTTP_ADDR` | unset | Bind address for `sndoc serve --http` (also `--http`) |
+| `SNDOC_HTTP_TOKEN` | unset | Required bearer token for the HTTP transport (also `--token`) |
 
 ## Development
 
 ```bash
 cargo build
-cargo test                     # offline test suite (no git/network)
+cargo test                     # offline test suite (no network; git_backend.rs
+                                # exercises clone/fetch/update against a local
+                                # file:// fixture repo, not the real mirror)
 cargo run -- doctor            # verify sqlite-vec + FTS5 load
 ```
 
@@ -212,9 +262,10 @@ cargo run -- doctor            # verify sqlite-vec + FTS5 load
 src/main.rs                    — clap CLI (entry point: `sndoc`)
 src/state.rs                   — lifecycle: clone, daily refresh, reindex-on-change
 src/index.rs                   — build the search index (chunk → embed → SQLite)
-src/mcp.rs                     — MCP stdio server (rmcp), shares the core
+src/mcp.rs                     — MCP server (rmcp): stdio and Streamable HTTP, shares the core
 src/core/      search, fetch, repo, embed, chunk, index_store, models, format,
-               http, constants — git (gitoxide) + raw-fetch + hybrid index, no CLI/MCP deps
+               http, constants — git (libgit2 via git2) + raw-fetch + hybrid index, no CLI/MCP deps
+tests/git_backend.rs           — integration test: clone/fetch/update lifecycle vs. a fixture repo
 installer/installer.iss        — Windows installer (Inno Setup): PATH + skill + cache cleanup
 .claude/skills/sndoc/SKILL.md  — auto-invoked Claude skill driving the CLI
 .github/workflows/test.yml     — CI: cargo build + test
