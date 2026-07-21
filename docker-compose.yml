@@ -14,7 +14,7 @@ services:
       # Persists the docs clone + search index across restarts/redeploys —
       # without it every deploy re-clones the full ServiceNowDocs repo.
       - sndoc-data:/data
-    ports:
+    #ports:
       # Publishing the host port is only useful for local testing. On
       # Coolify, drop this and expose the service through its proxy/domain
       # instead (set the container port to 8080 in the Coolify UI).
