@@ -215,6 +215,36 @@ enter the `https://sndoc.example.com/mcp` URL, then add the same
 `Authorization: Bearer <token>` header under the connector's request-headers
 option.
 
+### Docker / Coolify
+
+A `Dockerfile` and `docker-compose.yml` are included for running `sndoc serve
+--http` in a container (e.g. on [Coolify](https://coolify.io/)). The embedding
+model is baked into the image at build time, so no HuggingFace access is
+needed at runtime.
+
+Local test:
+
+```bash
+SNDOC_HTTP_TOKEN=<a-long-random-secret> docker compose up --build
+curl -i http://127.0.0.1:8080/mcp   # -> 401 once the server is up (token required)
+```
+
+On Coolify:
+
+1. New Resource → deploy this repo (Dockerfile or Docker Compose build pack).
+2. Set the `SNDOC_HTTP_TOKEN` environment variable (as a secret).
+3. Add persistent storage mapped to `/data` — this holds the docs clone and
+   search index; without it every redeploy re-clones the full
+   ServiceNowDocs repo.
+4. Set the container port to `8080`; Coolify's proxy handles the domain and
+   TLS in front of it.
+5. Give the healthcheck a generous start period — first boot clones the full
+   docs repo and builds the index, which takes a few minutes.
+
+Once up, the MCP endpoint is `https://<your-domain>/mcp`; clients send
+`Authorization: Bearer <SNDOC_HTTP_TOKEN>` (same as the [Remote MCP over
+HTTP](#remote-mcp-over-http) section above).
+
 ## Claude skill
 
 `.claude/skills/sndoc/SKILL.md` is an auto-invoked skill that tells Claude to reach

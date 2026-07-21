@@ -1,0 +1,24 @@
+services:
+  sndoc:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Required: fails the build if not set. Use a long random secret.
+      SNDOC_HTTP_TOKEN: ${SNDOC_HTTP_TOKEN:?set SNDOC_HTTP_TOKEN}
+      # Optional overrides (defaults baked into the image):
+      # SNDOC_HTTP_ADDR: 0.0.0.0:8080
+      # SNDOC_EMBED_MODEL: /opt/sndoc/model
+      # SNDOC_GIT_URL: https://github.com/ServiceNow/ServiceNowDocs.git
+      # SNDOC_FETCH_SOURCE: local
+    volumes:
+      # Persists the docs clone + search index across restarts/redeploys —
+      # without it every deploy re-clones the full ServiceNowDocs repo.
+      - sndoc-data:/data
+    ports:
+      # Publishing the host port is only useful for local testing. On
+      # Coolify, drop this and expose the service through its proxy/domain
+      # instead (set the container port to 8080 in the Coolify UI).
+      - "8080:8080"
+
+volumes:
+  sndoc-data:
