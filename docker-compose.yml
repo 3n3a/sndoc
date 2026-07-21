@@ -18,7 +18,7 @@ services:
       # Publishing the host port is only useful for local testing. On
       # Coolify, drop this and expose the service through its proxy/domain
       # instead (set the container port to 8080 in the Coolify UI).
-      - "8080:8080"
+      # - "8080:8080"
 
 volumes:
   sndoc-data:
