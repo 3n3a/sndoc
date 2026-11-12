@@ -68,7 +68,7 @@ pub fn build_index(branch: Option<&str>) -> Result<IndexManifest> {
         let vecs = embed_passages(&texts)?;
         store.insert_chunks(batch, &vecs)?;
         done += batch.len();
-        if done % (BATCH * 20) == 0 || done == all_chunks.len() {
+        if done.is_multiple_of(BATCH * 20) || done == all_chunks.len() {
             log(&format!("[index]   embedded {done}/{}", all_chunks.len()));
         }
     }
@@ -96,10 +96,13 @@ pub fn read_manifest() -> Option<IndexManifest> {
     serde_json::from_str(&data).ok()
 }
 
-/// Whether a built index is current for `commit`: same docs commit and the
-/// index layout this binary writes. Older layouts must be rebuilt.
+/// Whether a built index is current for `commit`: same docs commit, the index
+/// layout this binary writes, and the configured embedding model (vectors from
+/// different models are not comparable). Anything else must be rebuilt.
 pub fn is_current(manifest: &IndexManifest, commit: &str) -> bool {
-    manifest.commit == commit && manifest.schema_version == INDEX_SCHEMA_VERSION
+    manifest.commit == commit
+        && manifest.schema_version == INDEX_SCHEMA_VERSION
+        && manifest.embed_model == embed_model()
 }
 
 pub fn index_exists() -> bool {
@@ -116,7 +119,7 @@ mod tests {
             commit: commit.into(),
             chunk_count: 1,
             file_count: 1,
-            embed_model: "m".into(),
+            embed_model: embed_model(),
             embed_dim: EMBED_DIM,
             built_at: String::new(),
             schema_version,
@@ -131,6 +134,13 @@ mod tests {
             &manifest("abc", INDEX_SCHEMA_VERSION - 1),
             "abc"
         ));
+    }
+
+    #[test]
+    fn index_built_with_another_model_is_stale() {
+        let mut m = manifest("abc", INDEX_SCHEMA_VERSION);
+        m.embed_model = "minishlab/some-other-model".into();
+        assert!(!is_current(&m, "abc"));
     }
 
     #[test]

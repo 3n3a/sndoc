@@ -14,13 +14,15 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --locked
 
-# Bake the embedding model into the image instead of pulling it from
-# HuggingFace at runtime. model2vec-rs's StaticModel::from_pretrained loads
-# from a local folder when the path exists, given just these three files.
+# Bake the embedding model into the image instead of downloading it at
+# runtime: the fine-tuned model published as GitHub release assets (see
+# DEFAULT_EMBED_MODEL in src/core/constants.rs and tools/train-vectors).
+# model2vec-rs's StaticModel::from_pretrained loads from a local folder when
+# the path exists, given just these three files.
+ARG SNDOC_MODEL_URL=https://github.com/3n3a/sndoc/releases/download/embed-model-v1
 RUN mkdir -p /model \
     && for f in config.json tokenizer.json model.safetensors; do \
-         curl -fSL "https://huggingface.co/minishlab/potion-retrieval-32M/resolve/main/$f" \
-           -o "/model/$f"; \
+         curl -fSL "$SNDOC_MODEL_URL/$f" -o "/model/$f"; \
        done
 
 # --- runtime -------------------------------------------------------------

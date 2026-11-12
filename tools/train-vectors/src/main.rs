@@ -24,6 +24,9 @@
 //! the eval's `--dump-queries` output) are never trained on, so the eval stays
 //! honest. A further 1% of pages is held out for the per-epoch validation.
 //!
+//! Usually run through `train.sh` (downloads the base model, trains into
+//! `out/`, optionally publishes a GitHub release). Directly:
+//!
 //! ```text
 //! cargo run --release -- --model-dir <hf snapshot dir> --out <dir>
 //!     [--data-dir <sndoc data dir>] [--exclude heldout.tsv]
@@ -143,13 +146,15 @@ fn save_model(args: &Args, table: &[f32], rows: usize, cols: usize, note: &str) 
         }
     }
     write_embeddings(&args.out.join("model.safetensors"), table, rows, cols)?;
+    // No local paths here: this file is published with the model.
     fs::write(
         args.out.join("README.md"),
         format!(
-            "# sndoc fine-tuned static embeddings\n\nBase: `{}`\n\n{note}\n\n\
-             Use with `SNDOC_EMBED_MODEL={}` (and reindex).\n",
-            args.model_dir.display(),
-            args.out.display()
+            "# sndoc fine-tuned static embeddings\n\n\
+             `minishlab/potion-retrieval-32M` fine-tuned on the ServiceNow docs with \
+             sndoc's `tools/train-vectors` (model2vec format, 512-dim).\n\n{note}\n\n\
+             sndoc downloads this automatically; to use a local copy set \
+             `SNDOC_EMBED_MODEL=<folder with these files>`.\n"
         ),
     )?;
     Ok(())
@@ -200,7 +205,11 @@ fn words(s: &str) -> Vec<String> {
 }
 
 fn build_data(args: &Args, tok: &Tokenizer, unk: Option<u32>) -> Result<Data> {
-    let manifest = read_manifest().context("no sndoc index/manifest in the data dir")?;
+    if !repo::is_cloned() {
+        bail!("no docs clone in the sndoc data dir; run `sndoc --no-index update` first");
+    }
+    // The indexed branch if there is an index, else the clone's latest release.
+    let branch = read_manifest().map_or_else(repo::resolve_latest_branch, |m| m.branch);
     let exclude: HashSet<String> = match &args.exclude {
         Some(p) => fs::read_to_string(p)?
             .lines()
@@ -209,11 +218,11 @@ fn build_data(args: &Args, tok: &Tokenizer, unk: Option<u32>) -> Result<Data> {
             .collect(),
         None => HashSet::new(),
     };
-    let docs = repo::read_all_markdown(&manifest.branch)?;
+    let docs = repo::read_all_markdown(&branch)?;
     eprintln!(
         "[train] {} pages on {}; excluding {} eval pages",
         docs.len(),
-        manifest.branch,
+        branch,
         exclude.len()
     );
 
@@ -233,7 +242,7 @@ fn build_data(args: &Args, tok: &Tokenizer, unk: Option<u32>) -> Result<Data> {
             continue;
         }
         let meta = parse_doc(md).meta;
-        let chunks = chunk_doc(md, path, &manifest.branch);
+        let chunks = chunk_doc(md, path, &branch);
         let Some(lead) = chunks.first() else { continue };
         let ng = groups.len() as u32;
         let group = *groups.entry(meta.title.to_lowercase()).or_insert(ng);

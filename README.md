@@ -34,8 +34,10 @@ cargo build --release && ./target/release/sndoc --help
 
 On first run `sndoc` clones the docs repo (a full clone via
 [libgit2](https://libgit2.org/) — vendored in via the [`git2`](https://github.com/rust-lang/git2-rs)
-crate, so no `git` binary is needed) and downloads the embedding model
-(`minishlab/potion-retrieval-32M`, cached).
+crate, so no `git` binary is needed) and downloads the embedding model once
+(~130 MB: `potion-retrieval-32M` fine-tuned on these docs, published as
+[GitHub release assets](../../releases/tag/embed-model-v1) and cached under
+`<data dir>/models/`).
 Everything it writes lives under the per-user data dir, e.g.
 `~/.local/share/sndoc/` on Linux — override with `--data-dir` or `SNDOC_DATA_DIR`.
 
@@ -107,8 +109,9 @@ sndoc list-versions --json
   release branch straight from the git object store, chunks by heading, embeds
   each chunk with a **local**
   [model2vec](https://github.com/MinishLab/model2vec) static model
-  (`minishlab/potion-retrieval-32M`, 512-dim — a token→vector lookup + mean pool,
-  no transformer forward pass, no API) via
+  (`minishlab/potion-retrieval-32M` fine-tuned on the docs with
+  [`tools/train-vectors`](tools/train-vectors/), 512-dim — a token→vector lookup
+  + mean pool, no transformer forward pass, no API) via
   [model2vec-rs](https://github.com/MinishLab/model2vec-rs), and builds a SQLite
   file with an **FTS5** (BM25) table and a **`sqlite-vec`** vector table.
 - **Search (hybrid).** Embeds the query, runs BM25 + vector KNN, and fuses them
@@ -117,10 +120,20 @@ sndoc list-versions --json
   the vector arm catches queries that share no words with the topic. Results
   are deduped to the best chunk per file, and the same topic published under
   several paths is listed once.
-- **Search quality.** `cargo run --release --example eval` measures known-item
-  retrieval (R@k, MRR) against the built index; `-- --sweep` grid-searches the
-  ranking knobs in `SearchParams`. The index carries a schema version, so a
-  layout change rebuilds it automatically on the next run.
+- **Release notes** (`release-notes/**` and the combined upgrade notes under
+  `delta-*/`) count half in the ranking unless the query asks about release
+  notes or upgrades, so they no longer crowd out the feature docs.
+- **Search quality.** `cargo run --release --example eval` measures retrieval
+  (R@k, MRR) against the built index, both on sampled topics and on the
+  hand-written questions in `examples/eval-questions.tsv`
+  (`-- --queries examples/eval-questions.tsv --verbose`); `--sweep*` flags
+  grid-search the ranking knobs in `SearchParams`. MRR on held-out topics
+  (title / description / description minus title) went from 0.70 / 0.84 / 0.58
+  in v0.5 to 0.87 / 0.96 / 0.81, and the right page for real questions is in
+  the top 10 for 24 of 27 (v0.5: 22). Details:
+  [`tools/train-vectors`](tools/train-vectors/README.md#results).
+- **Index freshness.** The index records the docs commit, its layout version
+  and the embedding model; if any of them changes, the next run rebuilds it.
 - **Fetch & versions.** Markdown is read from the local clone's object store on
   the requested branch (latest by default), or from `raw.githubusercontent.com`
   with `--live`. Versions are the clone's release branches, ordered
@@ -277,7 +290,7 @@ The Windows installer (`sndoc-setup.exe`) can do this for you. Create
 | --- | --- | --- |
 | `SNDOC_DATA_DIR` | platform data dir | Where the clone, index, and state live (also `--data-dir`) |
 | `SNDOC_GIT_URL` | `https://github.com/ServiceNow/ServiceNowDocs.git` | Override the git remote (e.g. a mirror, or a local fixture for tests) |
-| `SNDOC_EMBED_MODEL` | `minishlab/potion-retrieval-32M` | model2vec model (512-dim); must match between index build and query |
+| `SNDOC_EMBED_MODEL` | `https://github.com/3n3a/sndoc/releases/download/embed-model-v1` | model2vec model (512-dim): a release/folder URL (downloaded once into `<data dir>/models/`), a Hugging Face id such as the base `minishlab/potion-retrieval-32M`, or a local folder. Changing it rebuilds the index on the next run |
 | `SNDOC_FETCH_SOURCE` | `local` | `local` reads docs from the clone (offline-capable); `live` reads from `raw.githubusercontent.com`. Per-command override: `--live` |
 | `SNDOC_HTTP_ADDR` | unset | Bind address for `sndoc serve --http` (also `--http`) |
 | `SNDOC_HTTP_TOKEN` | unset | Required bearer token for the HTTP transport (also `--token`) |
@@ -302,9 +315,11 @@ src/mcp.rs                     — MCP server (rmcp): stdio and Streamable HTTP,
 src/core/      search, fetch, repo, embed, chunk, index_store, models, format,
                http, constants — git (libgit2 via git2) + raw-fetch + hybrid index, no CLI/MCP deps
 tests/git_backend.rs           — integration test: clone/fetch/update lifecycle vs. a fixture repo
+examples/eval.rs               — retrieval-quality eval (R@k/MRR, parameter sweeps)
+examples/eval-questions.tsv    — hand-written questions from real sndoc use, with answers
+tools/train-vectors/           — embedding-model trainer (standalone crate, not in the CLI)
 installer/installer.iss        — Windows installer (Inno Setup): PATH + skill + cache cleanup
 .claude/skills/sndoc/SKILL.md  — auto-invoked Claude skill driving the CLI
 .github/workflows/test.yml     — CI: cargo build + test
 .github/workflows/release.yml  — CI: 3-platform cargo build + Windows installer on v* tags
-legacy-python/                 — the previous Python implementation, archived
 ```

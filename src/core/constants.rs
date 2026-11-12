@@ -42,18 +42,26 @@ pub const DOCS_BASE_URL: &str = "https://www.servicenow.com/docs";
 pub const DEFAULT_BRANCH: &str = "main";
 
 /// Embedding model (model2vec static embeddings — no transformer forward pass).
-/// potion-retrieval-32M is the best-performing static retrieval model; 512-dim,
-/// L2-normalized. Unlike bge, potion is symmetric: NO query prefix is applied.
-/// The indexer and the query side must use the same model so vectors are
-/// comparable. Downloaded from Hugging Face on first use and cached.
-pub const DEFAULT_EMBED_MODEL: &str = "minishlab/potion-retrieval-32M";
+/// The default is `minishlab/potion-retrieval-32M` fine-tuned on the
+/// ServiceNow docs with `tools/train-vectors` (512-dim, L2-normalized,
+/// symmetric: NO query prefix). It is published as GitHub release assets and
+/// downloaded once into [`models_dir`]. `SNDOC_EMBED_MODEL` may instead name a
+/// Hugging Face repo (e.g. the base `minishlab/potion-retrieval-32M`), a local
+/// model2vec folder, or another `http(s)://` folder URL. The indexer and the
+/// query side must use the same model; an index built with a different model
+/// is rebuilt automatically.
+pub const DEFAULT_EMBED_MODEL: &str =
+    "https://github.com/3n3a/sndoc/releases/download/embed-model-v1";
+
+/// Files a model2vec model folder needs (fetched for URL models).
+pub const MODEL_FILES: &[&str] = &["config.json", "tokenizer.json", "model.safetensors"];
 pub const EMBED_DIM: usize = 512;
 
 /// Version of the on-disk index layout. Bump whenever the schema or the
 /// indexed/embedded text changes; an index with a different version is rebuilt
 /// on the next run even if the docs commit is unchanged.
 ///   1 (implicit, <= v0.5): content/title/breadcrumb
-///   2: + frontmatter description (FTS column + chunk context)
+///   2: + frontmatter description (FTS column)
 pub const INDEX_SCHEMA_VERSION: u32 = 2;
 
 pub fn embed_model() -> String {
@@ -115,6 +123,11 @@ pub fn index_db_path() -> PathBuf {
 /// Manifest describing the built index (branch, commit, counts, model).
 pub fn manifest_path() -> PathBuf {
     index_dir().join("manifest.json")
+}
+
+/// Downloaded embedding models (URL models only; see [`DEFAULT_EMBED_MODEL`]).
+pub fn models_dir() -> PathBuf {
+    data_dir().join("models")
 }
 
 /// Small JSON file tracking `last_fetch` for the daily-refresh throttle.

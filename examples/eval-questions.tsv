@@ -1,0 +1,40 @@
+manual	Service Operations Workspace record page variant script data variantToLoad tabs	it-service-management/service-operations-workspace/configure-record-page-order-sow.md
+manual	UI Builder Form controller data resource table sysId inputs add form to page	application-development/ui-builder/controllers.md
+manual	DecisionTableAPI getDecision first matching decision row result columns	api-reference/server-api-reference/DecisionTableAPI.md
+manual	Make a decision flow logic decision table result values data pills first matching row	build-workflows/workflow-studio/flow-logic-make-decision.md
+manual	decision table result columns multiple outputs condition operators input types	build-workflows/workflow-studio/use-decision-tables.md
+manual	decision table result columns multiple outputs condition operators input types	build-workflows/workflow-studio/create-decision-table-in-decision-designer.md
+manual	decision table result columns multiple outputs condition operators input types	build-workflows/workflow-studio/manage-decision-tables-ms-excel.md
+manual	decision builder condition cell operators reference field is one of advanced condition column	build-workflows/workflow-studio/create-decision-table-in-decision-designer.md
+manual	decision builder condition cell operators reference field is one of advanced condition column	build-workflows/workflow-studio/use-decision-tables.md
+manual	Instance Scan script only check engine.finding create a script-only check	platform-administration/instance-scan/hs-create-health-check.md
+manual	Instance Scan script only check engine.finding create a script-only check	platform-administration/instance-scan/hs-create-script-health-check.md
+manual	Instance Scan table check advanced script finding_details setValue current record	platform-administration/instance-scan/hs-create-table-health-check.md
+manual	Instance Scan suite scan script only checks run; check suite create scan_check_suite	platform-administration/instance-scan/hc-create-check-suite.md
+manual	Instance Scan suite scan script only checks run; check suite create scan_check_suite	platform-administration/instance-scan/hc-execute-suite-scan.md
+manual	sn_instance_scan ScanInstance API triggerSuiteScan suiteScan server script	platform-administration/instance-scan/hc-execute-suite-scan.md
+manual	sn_instance_scan ScanInstance API triggerSuiteScan suiteScan server script	api-reference/rest-apis/cicd-api.md
+manual	Request status AI agent get actions for ticket execute action resolve close incident employee	intelligent-experiences/plat-request-status-agent-ai-agent.md
+manual	configure actions for standard ticket page resolve	platform-user-interface/service-portal/configure-actions-for-standard-ticket-page.md
+manual	Now Assist panel access role who can see Now Assist panel icon unified navigation header	intelligent-experiences/implement-aias-security-new.md
+manual	Now Assist panel access role who can see Now Assist panel icon unified navigation header	intelligent-experiences/activate-now-assist-panel.md
+manual	gen_ai_skill ACL type deny unless wildcard restrict all Now Assist skills to a role	intelligent-experiences/implement-aias-security-new.md
+manual	gen_ai_skill ACL type deny unless wildcard restrict all Now Assist skills to a role	intelligent-experiences/now-assist-skill-kit/nask-access-control.md
+manual	user criteria inactive group members not matched	servicenow-platform/service-catalog/debug-user-criteria-cat-item.md
+manual	user criteria inactive group members not matched	servicenow-platform/service-catalog/t_AppUserCritItemsCat.md
+manual	user criteria group field active groups only members	servicenow-platform/service-catalog/debug-user-criteria-cat-item.md
+manual	user criteria group field active groups only members	servicenow-platform/service-catalog/t_AppUserCritItemsCat.md
+manual	catalog item Not Available For user criteria restrict access	servicenow-platform/service-catalog/t_AppUserCritItemsCat.md
+manual	glide.sc.entitlement.override property	servicenow-platform/service-catalog/r_ServiceCatalogProperties.md
+manual	create custom data lookup table extend Data Lookup Matcher Rules	platform-administration/r_CreateCustomDataLookups.md
+manual	custom table license exempt tables extending dl_matcher data lookup	platform-administration/grandfathered-and-exempt-tables-v2.md
+manual	ATF Impersonate step user data pill from Create a User step	application-development/automated-test-framework-atf/automated-test-framework-design-considerations.md
+manual	ATF Impersonate step user data pill from Create a User step	application-development/automated-test-framework-atf/test-steps-server-category.md
+manual	Automated Test Framework best practices production instance impersonate rollback	application-development/automated-test-framework-atf/automated-test-framework-design-considerations.md
+manual	glide.rest.debug REST API debug logging request response body	api-reference/rest-api-explorer/debugging-rest-queries.md
+manual	glide.rest.debug REST API debug logging request response body	api-reference/rest-api-explorer/rest-session-debug-header.md
+manual	node log file browser download node logs system diagnostics	platform-security/r_LogUtilities.md
+manual	Instance Data Replication architecture producer consumer replication set bidirectional	servicenow-platform/instance-data-replication-idr/exploring-instance-data-replication.md
+manual	Instance Data Replication excluded tables sys_user sys_user_group replicate users groups roles	servicenow-platform/instance-data-replication-idr/exploring-instance-data-replication.md
+manual	Instance Data Replication excluded tables sys_user sys_user_group replicate users groups roles	servicenow-platform/instance-data-replication-idr/prepare-instance-data-replication.md
+manual	query ACL GlideRecordSecure addUserEncodedQuery query_match query_range	api-reference/scripts/useful-server-side-scripts.md

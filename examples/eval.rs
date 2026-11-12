@@ -17,8 +17,10 @@
 //!
 //! ```text
 //! cargo run --release --example eval -- [--sample 300] [--seed 42] [--sweep] [--sweep-rn]
+//!                                        [--sweep-wvec] [--verbose]  # per-query ranks
 //!                                        [--queries file.tsv]   # [kind<TAB>]query<TAB>path
 //!                                        [--dump-queries file.tsv]  # write the sampled set
+//!                                        [--dump-only]              # ... and exit
 //! ```
 //! Uses the index in the data dir (`SNDOC_DATA_DIR` / `--data-dir`); run
 //! `sndoc index` first.
@@ -51,6 +53,8 @@ struct Query {
     kind: &'static str,
     text: String,
     target: usize, // index into topics
+    /// Further acceptable answers (a `--queries` line repeated with another path).
+    alts: Vec<usize>,
 }
 
 fn norm(s: &str) -> String {
@@ -127,6 +131,7 @@ fn main() -> Result<()> {
     let sample: usize = arg(&args, "--sample").map_or(300, |s| s.parse().unwrap());
     let seed: u32 = arg(&args, "--seed").map_or(42, |s| s.parse().unwrap());
     let sweep = args.iter().any(|a| a == "--sweep");
+    let verbose = args.iter().any(|a| a == "--verbose");
 
     let Some(manifest) = read_manifest() else {
         bail!("no index found; run `sndoc index` first");
@@ -166,11 +171,16 @@ fn main() -> Result<()> {
             };
             let kind: &'static str = Box::leak(kind.to_string().into_boxed_str());
             match by_path.get(p.trim()) {
-                Some(&i) => queries.push(Query {
-                    kind,
-                    text: q.to_string(),
-                    target: i,
-                }),
+                // Consecutive lines with the same query = several right answers.
+                Some(&i) => match queries.last_mut() {
+                    Some(last) if last.kind == kind && last.text == q => last.alts.push(i),
+                    _ => queries.push(Query {
+                        kind,
+                        text: q.to_string(),
+                        target: i,
+                        alts: Vec::new(),
+                    }),
+                },
                 None => eprintln!("[eval] unknown path, skipped: {p}"),
             }
         }
@@ -190,11 +200,13 @@ fn main() -> Result<()> {
                 kind: "title",
                 text: t.title.clone(),
                 target: i,
+                alts: Vec::new(),
             });
             queries.push(Query {
                 kind: "desc",
                 text: t.description.clone(),
                 target: i,
+                alts: Vec::new(),
             });
             let tw: HashSet<String> = words(&t.title).into_iter().collect();
             let rest: Vec<String> = words(&t.description)
@@ -206,6 +218,7 @@ fn main() -> Result<()> {
                     kind: "desc-title",
                     text: rest.join(" "),
                     target: i,
+                    alts: Vec::new(),
                 });
             }
         }
@@ -225,6 +238,10 @@ fn main() -> Result<()> {
             .collect();
         std::fs::write(&file, lines.join("\n") + "\n")?;
         eprintln!("[eval] wrote {} queries to {file}", lines.len());
+    }
+
+    if args.iter().any(|a| a == "--dump-only") {
+        return Ok(());
     }
 
     // Embed every query once; reuse across configurations.
@@ -263,6 +280,17 @@ fn main() -> Result<()> {
             },
         ),
     ];
+    if args.iter().any(|a| a == "--sweep-wvec") {
+        for w_vec in [0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0] {
+            configs.push((
+                format!("w_vec={w_vec}"),
+                SearchParams {
+                    w_vec,
+                    ..SearchParams::default()
+                },
+            ));
+        }
+    }
     if args.iter().any(|a| a == "--sweep-rn") {
         for w in [1.0, 0.8, 0.6, 0.5, 0.4, 0.3] {
             configs.push((
@@ -356,11 +384,24 @@ fn main() -> Result<()> {
             let fts = &fts_arms[qi][..fts_arms[qi].len().min(pool)];
             let vec_arm = &vec_arms[qi][..vec_arms[qi].len().min(pool)];
             let hits = store.fuse(&q.text, fts, vec_arm, 10, params)?;
+            let answers: Vec<&Topic> = std::iter::once(q.target)
+                .chain(q.alts.iter().copied())
+                .map(|i| &topics[i])
+                .collect();
             let rank = hits
                 .iter()
-                .position(|h| h.path == target.path || norm(&h.title) == norm(&target.title))
+                .position(|h| {
+                    answers
+                        .iter()
+                        .any(|t| h.path == t.path || norm(&h.title) == norm(&t.title))
+                })
                 .map(|i| i + 1);
             per.entry(q.kind).or_default().add(rank);
+            if verbose {
+                let r = rank.map_or("  -".to_string(), |r| format!("{r:>3}"));
+                let top = hits.first().map_or("", |h| h.path.as_str());
+                println!("   {r}  {}   [top: {top}]", q.text);
+            }
             if !is_release_notes_path(&target.path) {
                 rn_slots += hits
                     .iter()
