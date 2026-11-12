@@ -23,6 +23,9 @@ pub struct IndexChunk {
     pub canonical_url: String,
     /// Frontmatter last_updated, or "".
     pub last_updated: String,
+    /// Frontmatter description (the topic's one-line summary), or "".
+    #[serde(default)]
+    pub description: String,
 }
 
 /// A search result: one topic (deduped to the best-matching chunk per file).
@@ -73,4 +76,9 @@ pub struct IndexManifest {
     pub embed_dim: usize,
     /// ISO timestamp (provided by the caller).
     pub built_at: String,
+    /// Index layout version ([`crate::core::constants::INDEX_SCHEMA_VERSION`]).
+    /// Missing in manifests written before v0.6 (read as 0), which forces a
+    /// rebuild so old installs pick up schema changes.
+    #[serde(default)]
+    pub schema_version: u32,
 }

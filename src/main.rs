@@ -204,7 +204,7 @@ fn run(cli: &Cli) -> Result<()> {
                 .to_lowercase();
             if !force && indexer::index_exists() {
                 if let Some(manifest) = indexer::read_manifest() {
-                    if manifest.commit == repo::branch_tip_commit(&target)? {
+                    if indexer::is_current(&manifest, &repo::branch_tip_commit(&target)?) {
                         println!(
                             "Index already up to date for '{target}'. Use --force to rebuild."
                         );

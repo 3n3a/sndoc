@@ -49,6 +49,13 @@ pub const DEFAULT_BRANCH: &str = "main";
 pub const DEFAULT_EMBED_MODEL: &str = "minishlab/potion-retrieval-32M";
 pub const EMBED_DIM: usize = 512;
 
+/// Version of the on-disk index layout. Bump whenever the schema or the
+/// indexed/embedded text changes; an index with a different version is rebuilt
+/// on the next run even if the docs commit is unchanged.
+///   1 (implicit, <= v0.5): content/title/breadcrumb
+///   2: + frontmatter description (FTS column + chunk context)
+pub const INDEX_SCHEMA_VERSION: u32 = 2;
+
 pub fn embed_model() -> String {
     env::var("SNDOC_EMBED_MODEL").unwrap_or_else(|_| DEFAULT_EMBED_MODEL.to_string())
 }

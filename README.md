@@ -112,9 +112,15 @@ sndoc list-versions --json
   [model2vec-rs](https://github.com/MinishLab/model2vec-rs), and builds a SQLite
   file with an **FTS5** (BM25) table and a **`sqlite-vec`** vector table.
 - **Search (hybrid).** Embeds the query, runs BM25 + vector KNN, and fuses them
-  with **Reciprocal Rank Fusion**. Exact-term queries (`gliderecord`) lean on
-  BM25; conceptual ones lean on the vector arm. Results are deduped to the best
-  chunk per file.
+  with weighted **Reciprocal Rank Fusion**. BM25 weights title and frontmatter
+  description hits above body text and ignores function words ("how", "to");
+  the vector arm catches queries that share no words with the topic. Results
+  are deduped to the best chunk per file, and the same topic published under
+  several paths is listed once.
+- **Search quality.** `cargo run --release --example eval` measures known-item
+  retrieval (R@k, MRR) against the built index; `-- --sweep` grid-searches the
+  ranking knobs in `SearchParams`. The index carries a schema version, so a
+  layout change rebuilds it automatically on the next run.
 - **Fetch & versions.** Markdown is read from the local clone's object store on
   the requested branch (latest by default), or from `raw.githubusercontent.com`
   with `--live`. Versions are the clone's release branches, ordered
