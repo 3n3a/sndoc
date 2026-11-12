@@ -39,10 +39,11 @@ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
   Check: NeedsAddPath(ExpandConstant('{app}')); \
   Tasks: addtopath
 
-; sndoc keeps its clone + index under platformdirs.user_data_dir("sndoc"),
-; i.e. %LOCALAPPDATA%\sndoc. The ~123 MB Hugging Face model cache lives
-; separately under %USERPROFILE%\.cache\huggingface and is intentionally NOT
-; removed here (it may be shared with other tools).
+; sndoc keeps its clone, index and the downloaded embedding model (~130 MB,
+; <data>\models) under platformdirs.user_data_dir("sndoc"), i.e.
+; %LOCALAPPDATA%\sndoc, so "delete cache" removes all of it. Only a model
+; picked via SNDOC_EMBED_MODEL=<Hugging Face id> lands in the shared HF cache
+; (%USERPROFILE%\.cache\huggingface), which is intentionally NOT removed.
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\sndoc"; Tasks: deletecache
 

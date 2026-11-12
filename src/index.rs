@@ -9,7 +9,9 @@
 use anyhow::{bail, Result};
 
 use crate::core::chunk::{chunk_doc, chunk_embed_text};
-use crate::core::constants::{embed_model, index_db_path, manifest_path, EMBED_DIM};
+use crate::core::constants::{
+    embed_model, index_db_path, manifest_path, EMBED_DIM, INDEX_SCHEMA_VERSION,
+};
 use crate::core::embed::embed_passages;
 use crate::core::index_store::IndexStore;
 use crate::core::models::{IndexChunk, IndexManifest};
@@ -49,7 +51,10 @@ pub fn build_index(branch: Option<&str>) -> Result<IndexManifest> {
     for (repo_path, content) in &docs {
         all_chunks.extend(chunk_doc(content, repo_path, &branch));
     }
-    log(&format!("[index] {} chunks; embedding...", all_chunks.len()));
+    log(&format!(
+        "[index] {} chunks; embedding...",
+        all_chunks.len()
+    ));
 
     let db_path = index_db_path();
     if let Some(parent) = db_path.parent() {
@@ -63,7 +68,7 @@ pub fn build_index(branch: Option<&str>) -> Result<IndexManifest> {
         let vecs = embed_passages(&texts)?;
         store.insert_chunks(batch, &vecs)?;
         done += batch.len();
-        if done % (BATCH * 20) == 0 || done == all_chunks.len() {
+        if done.is_multiple_of(BATCH * 20) || done == all_chunks.len() {
             log(&format!("[index]   embedded {done}/{}", all_chunks.len()));
         }
     }
@@ -77,6 +82,7 @@ pub fn build_index(branch: Option<&str>) -> Result<IndexManifest> {
         embed_model: embed_model(),
         embed_dim: EMBED_DIM,
         built_at: chrono::Utc::now().to_rfc3339(),
+        schema_version: INDEX_SCHEMA_VERSION,
     };
     std::fs::write(manifest_path(), serde_json::to_string_pretty(&manifest)?)?;
     log(&format!("[index] wrote index -> {db_str}"));
@@ -90,6 +96,59 @@ pub fn read_manifest() -> Option<IndexManifest> {
     serde_json::from_str(&data).ok()
 }
 
+/// Whether a built index is current for `commit`: same docs commit, the index
+/// layout this binary writes, and the configured embedding model (vectors from
+/// different models are not comparable). Anything else must be rebuilt.
+pub fn is_current(manifest: &IndexManifest, commit: &str) -> bool {
+    manifest.commit == commit
+        && manifest.schema_version == INDEX_SCHEMA_VERSION
+        && manifest.embed_model == embed_model()
+}
+
 pub fn index_exists() -> bool {
     index_db_path().exists() && manifest_path().exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(commit: &str, schema_version: u32) -> IndexManifest {
+        IndexManifest {
+            branch: "brazil".into(),
+            commit: commit.into(),
+            chunk_count: 1,
+            file_count: 1,
+            embed_model: embed_model(),
+            embed_dim: EMBED_DIM,
+            built_at: String::new(),
+            schema_version,
+        }
+    }
+
+    #[test]
+    fn index_is_current_only_for_same_commit_and_schema() {
+        assert!(is_current(&manifest("abc", INDEX_SCHEMA_VERSION), "abc"));
+        assert!(!is_current(&manifest("abc", INDEX_SCHEMA_VERSION), "def"));
+        assert!(!is_current(
+            &manifest("abc", INDEX_SCHEMA_VERSION - 1),
+            "abc"
+        ));
+    }
+
+    #[test]
+    fn index_built_with_another_model_is_stale() {
+        let mut m = manifest("abc", INDEX_SCHEMA_VERSION);
+        m.embed_model = "minishlab/some-other-model".into();
+        assert!(!is_current(&m, "abc"));
+    }
+
+    #[test]
+    fn pre_v06_manifest_reads_as_schema_zero() {
+        let json = r#"{"branch":"zurich","commit":"abc","chunk_count":1,"file_count":1,
+                       "embed_model":"m","embed_dim":512,"built_at":""}"#;
+        let m: IndexManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.schema_version, 0);
+        assert!(!is_current(&m, "abc"));
+    }
 }

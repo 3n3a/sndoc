@@ -140,7 +140,7 @@ fn refresh_and_sync(
 
     let up_to_date = manifest
         .as_ref()
-        .map(|m| m.commit == target_commit)
+        .map(|m| index::is_current(m, &target_commit))
         .unwrap_or(false);
 
     if !up_to_date {

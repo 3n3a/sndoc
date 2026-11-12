@@ -1,13 +1,22 @@
 services:
   sndoc:
-    build: .
+    build:
+      context: .
+      # Opt into the docs-fine-tuned embedding model (see tools/train-vectors):
+      # args:
+      #   SNDOC_MODEL_URL: https://github.com/3n3a/sndoc/releases/download/embed-model-v1
+      #   SNDOC_MODEL_NAME: embed-model-v1
     restart: unless-stopped
     environment:
       # Required: fails the build if not set. Use a long random secret.
       SNDOC_HTTP_TOKEN: ${SNDOC_HTTP_TOKEN:?set SNDOC_HTTP_TOKEN}
       # Optional overrides (defaults baked into the image):
       # SNDOC_HTTP_ADDR: 0.0.0.0:8080
-      # SNDOC_EMBED_MODEL: /opt/sndoc/model
+      # SNDOC_EMBED_MODEL: /opt/sndoc/models/potion-retrieval-32M
+      # Query log (on in the image): searches + fetches go to
+      # /data/query-log.db for building eval sets (`sndoc query-log`).
+      # SNDOC_QUERY_LOG: "0"
+      # SNDOC_QUERY_LOG_RETENTION_DAYS: "180"
       # SNDOC_GIT_URL: https://github.com/ServiceNow/ServiceNowDocs.git
       # SNDOC_FETCH_SOURCE: local
     volumes:

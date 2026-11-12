@@ -22,6 +22,7 @@ static FM_BOUNDARY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^-{3,}\s*$").
 #[derive(Debug, Clone, Default)]
 pub struct DocMeta {
     pub title: String,
+    pub description: String,
     pub breadcrumb: String,
     pub canonical_url: String,
     pub last_updated: String,
@@ -42,7 +43,11 @@ fn clen(s: &str) -> usize {
 /// `s[start..end]` in character units (`end == None` → to the end).
 fn cslice(s: &str, start: usize, end: Option<usize>) -> String {
     match end {
-        Some(e) => s.chars().skip(start).take(e.saturating_sub(start)).collect(),
+        Some(e) => s
+            .chars()
+            .skip(start)
+            .take(e.saturating_sub(start))
+            .collect(),
         None => s.chars().skip(start).collect(),
     }
 }
@@ -108,6 +113,7 @@ pub fn parse_doc(markdown: &str) -> ParsedDoc {
     ParsedDoc {
         meta: DocMeta {
             title: get("title"),
+            description: get("description"),
             breadcrumb: get("breadcrumb"),
             canonical_url: get("canonical_url"),
             last_updated: get("last_updated"),
@@ -147,7 +153,11 @@ fn split_sections(body: &str) -> Vec<Section> {
                 });
             }
             buf.clear();
-            heading = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("").to_string();
+            heading = caps
+                .get(2)
+                .map(|m| m.as_str().trim())
+                .unwrap_or("")
+                .to_string();
         } else {
             buf.push(line);
         }
@@ -219,6 +229,7 @@ pub fn chunk_doc(markdown: &str, file_path: &str, release: &str) -> Vec<IndexChu
                 content: window.trim().to_string(),
                 canonical_url: meta.canonical_url.clone(),
                 last_updated: meta.last_updated.clone(),
+                description: meta.description.clone(),
             });
         }
     }
@@ -235,6 +246,7 @@ pub fn chunk_doc(markdown: &str, file_path: &str, release: &str) -> Vec<IndexChu
             content: meta.breadcrumb.clone(),
             canonical_url: meta.canonical_url.clone(),
             last_updated: meta.last_updated.clone(),
+            description: meta.description.clone(),
         });
     }
     chunks
@@ -286,7 +298,10 @@ Fetch a single record.
         assert!(headings.contains(&"Query Methods"));
         assert!(headings.contains(&"get()"));
         // Anchor is the slug of the heading.
-        let qm = chunks.iter().find(|c| c.heading == "Query Methods").unwrap();
+        let qm = chunks
+            .iter()
+            .find(|c| c.heading == "Query Methods")
+            .unwrap();
         assert_eq!(qm.anchor, "query-methods");
         // Frontmatter is parsed onto every chunk.
         assert_eq!(qm.title, "GlideRecord");
@@ -321,6 +336,7 @@ Fetch a single record.
             content: "body text".into(),
             canonical_url: String::new(),
             last_updated: String::new(),
+            description: String::new(),
         };
         let t = chunk_embed_text(&c);
         assert_eq!(

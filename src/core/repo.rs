@@ -361,7 +361,14 @@ pub struct RepoPath {
 /// `known_releases` (the dynamic branch set) decides whether a leading segment
 /// is a release.
 pub fn to_repo_path(input: &str, known_releases: &HashSet<String>) -> RepoPath {
-    let mut p = input.trim().to_string();
+    // Drop `#anchor` / `?query` (search hits link to `...html#heading`) and
+    // markdown escapes copied from frontmatter canonical URLs (`t\_Foo`).
+    let mut p = input
+        .trim()
+        .split(['#', '?'])
+        .next()
+        .unwrap_or("")
+        .replace('\\', "");
     p = Regex::new(r"^https?://[^/]+/docs/")
         .unwrap()
         .replace(&p, "")
@@ -478,6 +485,26 @@ mod tests {
             &releases(),
         );
         assert_eq!(rp.repo_path, "api/glide-record.md");
+    }
+
+    #[test]
+    fn docs_url_with_anchor_query_and_escapes() {
+        let rp = to_repo_path(
+            "https://www.servicenow.com/docs/r/api-reference/scripts/useful-server-side-scripts.html#enforcing-query-acls",
+            &releases(),
+        );
+        assert_eq!(
+            rp.repo_path,
+            "api-reference/scripts/useful-server-side-scripts.md"
+        );
+        let rp = to_repo_path(
+            "https://www.servicenow.com/docs/r/platform-security/authentication/t\\_CreateASAML2Upd1SSOConfigMultiSSO.html?x=1#saml",
+            &releases(),
+        );
+        assert_eq!(
+            rp.repo_path,
+            "platform-security/authentication/t_CreateASAML2Upd1SSOConfigMultiSSO.md"
+        );
     }
 
     #[test]

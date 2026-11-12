@@ -13,7 +13,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{Implementation, InitializeResult, ServerCapabilities, ServerInfo};
+use rmcp::model::{Extensions, Implementation, InitializeResult, ServerCapabilities, ServerInfo};
 use rmcp::transport::stdio;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -24,7 +24,25 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::fetch as docs;
 use crate::core::format::{format_fetch, format_search, format_versions};
+use crate::core::query_log::{self, Source};
 use crate::core::search::search as search_docs;
+
+/// Who is calling, for the query log: the MCP session header over HTTP, one
+/// id per process over stdio (a stdio server has exactly one client).
+fn caller(ext: &Extensions) -> (Source, String) {
+    match ext.get::<axum::http::request::Parts>() {
+        Some(parts) => (
+            Source::McpHttp,
+            parts
+                .headers
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string(),
+        ),
+        None => (Source::McpStdio, query_log::process_session().to_string()),
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchArgs {
@@ -91,8 +109,15 @@ impl Sndoc {
     async fn search_servicenow_docs(
         &self,
         Parameters(args): Parameters<SearchArgs>,
+        ext: Extensions,
     ) -> Result<String, ErrorData> {
-        blocking(move || Ok(format_search(&search_docs(&args.query, 8)?))).await
+        let (source, session) = caller(&ext);
+        blocking(move || {
+            let hits = search_docs(&args.query, 8)?;
+            query_log::log_search(source, &session, &args.query, &hits);
+            Ok(format_search(&hits))
+        })
+        .await
     }
 
     #[tool(
@@ -105,13 +130,13 @@ impl Sndoc {
     async fn fetch_servicenow_doc(
         &self,
         Parameters(args): Parameters<FetchArgs>,
+        ext: Extensions,
     ) -> Result<String, ErrorData> {
+        let (source, session) = caller(&ext);
         blocking(move || {
-            Ok(format_fetch(&docs::fetch(
-                &args.path,
-                args.version.as_deref(),
-                args.live,
-            )?))
+            let res = docs::fetch(&args.path, args.version.as_deref(), args.live);
+            query_log::log_fetch(source, &session, &args.path, args.version.as_deref(), &res);
+            Ok(format_fetch(&res?))
         })
         .await
     }
@@ -125,8 +150,15 @@ impl Sndoc {
     async fn fetch_servicenow_doc_by_url(
         &self,
         Parameters(args): Parameters<FetchUrlArgs>,
+        ext: Extensions,
     ) -> Result<String, ErrorData> {
-        blocking(move || Ok(format_fetch(&docs::fetch(&args.url, None, args.live)?))).await
+        let (source, session) = caller(&ext);
+        blocking(move || {
+            let res = docs::fetch(&args.url, None, args.live);
+            query_log::log_fetch(source, &session, &args.url, None, &res);
+            Ok(format_fetch(&res?))
+        })
+        .await
     }
 
     #[tool(

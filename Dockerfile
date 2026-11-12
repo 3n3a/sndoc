@@ -14,13 +14,19 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --locked
 
-# Bake the embedding model into the image instead of pulling it from
-# HuggingFace at runtime. model2vec-rs's StaticModel::from_pretrained loads
-# from a local folder when the path exists, given just these three files.
-RUN mkdir -p /model \
+# Bake the embedding model into the image instead of downloading it at
+# runtime. model2vec-rs's StaticModel::from_pretrained loads from a local
+# folder when the path exists, given just these three files. Default: the base
+# potion-retrieval-32M. Opt into the docs-fine-tuned model with
+#   --build-arg SNDOC_MODEL_URL=https://github.com/3n3a/sndoc/releases/download/embed-model-v1
+#   --build-arg SNDOC_MODEL_NAME=embed-model-v1
+# The folder is named after the model so that switching models changes
+# SNDOC_EMBED_MODEL, which makes sndoc rebuild a persisted index.
+ARG SNDOC_MODEL_URL=https://huggingface.co/minishlab/potion-retrieval-32M/resolve/main
+ARG SNDOC_MODEL_NAME=potion-retrieval-32M
+RUN mkdir -p "/model/$SNDOC_MODEL_NAME" \
     && for f in config.json tokenizer.json model.safetensors; do \
-         curl -fSL "https://huggingface.co/minishlab/potion-retrieval-32M/resolve/main/$f" \
-           -o "/model/$f"; \
+         curl -fSL "$SNDOC_MODEL_URL/$f" -o "/model/$SNDOC_MODEL_NAME/$f"; \
        done
 
 # --- runtime -------------------------------------------------------------
@@ -33,13 +39,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/sndoc /usr/local/bin/sndoc
-COPY --from=builder /model /opt/sndoc/model
+COPY --from=builder /model /opt/sndoc/models
+ARG SNDOC_MODEL_NAME=potion-retrieval-32M
 
 RUN mkdir -p /data
 
 ENV SNDOC_HTTP_ADDR=0.0.0.0:8080 \
     SNDOC_DATA_DIR=/data \
-    SNDOC_EMBED_MODEL=/opt/sndoc/model \
+    SNDOC_EMBED_MODEL=/opt/sndoc/models/${SNDOC_MODEL_NAME} \
+    SNDOC_QUERY_LOG=1 \
     HF_HOME=/data/hf
 # SNDOC_HTTP_TOKEN is intentionally left unset here — `sndoc serve --http`
 # refuses to start without it; set it at deploy time (see docker-compose.yml
