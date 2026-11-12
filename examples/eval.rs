@@ -16,7 +16,7 @@
 //! open-ended questions; use `--queries` for a hand-written set.
 //!
 //! ```text
-//! cargo run --release --example eval -- [--sample 300] [--seed 42] [--sweep]
+//! cargo run --release --example eval -- [--sample 300] [--seed 42] [--sweep] [--sweep-rn]
 //!                                        [--queries file.tsv]   # [kind<TAB>]query<TAB>path
 //!                                        [--dump-queries file.tsv]  # write the sampled set
 //! ```
@@ -29,7 +29,7 @@ use anyhow::{bail, Result};
 use sndoc::core::chunk::parse_doc;
 use sndoc::core::constants::index_db_path;
 use sndoc::core::embed::embed_query;
-use sndoc::core::index_store::{Candidate, IndexStore, SearchParams};
+use sndoc::core::index_store::{is_release_notes_path, Candidate, IndexStore, SearchParams};
 use sndoc::core::repo;
 use sndoc::index::read_manifest;
 
@@ -263,6 +263,17 @@ fn main() -> Result<()> {
             },
         ),
     ];
+    if args.iter().any(|a| a == "--sweep-rn") {
+        for w in [1.0, 0.8, 0.6, 0.5, 0.4, 0.3] {
+            configs.push((
+                format!("release_notes_weight={w}"),
+                SearchParams {
+                    release_notes_weight: w,
+                    ..SearchParams::default()
+                },
+            ));
+        }
+    }
     if sweep {
         let base = SearchParams::default();
         for w_vec in [0.2, 0.3, 0.4, 0.5, 0.7] {
@@ -325,6 +336,9 @@ fn main() -> Result<()> {
     for (name, params) in &configs {
         let t0 = std::time::Instant::now();
         let mut per: HashMap<&str, Metrics> = HashMap::new();
+        // Share of top-10 slots taken by release notes, over queries whose
+        // target is not itself a release-notes page.
+        let (mut rn_slots, mut all_slots) = (0usize, 0usize);
         // The BM25 arm depends only on column weights + stopwords (top-k is a
         // prefix of a larger top-k), so cache it across the other knobs.
         let fts_key = format!("{:?}/{}", params.column_weights, params.drop_stopwords);
@@ -341,15 +355,25 @@ fn main() -> Result<()> {
             let pool = params.pool.max(40);
             let fts = &fts_arms[qi][..fts_arms[qi].len().min(pool)];
             let vec_arm = &vec_arms[qi][..vec_arms[qi].len().min(pool)];
-            let hits = store.fuse(fts, vec_arm, 10, params)?;
+            let hits = store.fuse(&q.text, fts, vec_arm, 10, params)?;
             let rank = hits
                 .iter()
                 .position(|h| h.path == target.path || norm(&h.title) == norm(&target.title))
                 .map(|i| i + 1);
             per.entry(q.kind).or_default().add(rank);
+            if !is_release_notes_path(&target.path) {
+                rn_slots += hits
+                    .iter()
+                    .filter(|h| is_release_notes_path(&h.path))
+                    .count();
+                all_slots += hits.len();
+            }
         }
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
-        println!("== {name}  ({ms:.1} ms/query incl. any uncached BM25)");
+        println!(
+            "== {name}  ({ms:.1} ms/query incl. any uncached BM25; release notes in top-10: {:.1}%)",
+            100.0 * rn_slots as f64 / all_slots.max(1) as f64
+        );
         let mut mean = 0.0;
         for k in &kinds {
             let m = &per[k];

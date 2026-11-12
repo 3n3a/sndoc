@@ -115,6 +115,11 @@ pub struct SearchParams {
     /// Collapse hits that are the same topic published under several paths
     /// (identical title + snippet), keeping the best-ranked copy.
     pub collapse_duplicates: bool,
+    /// Score multiplier for release-note pages (`release-notes/**` and the
+    /// combined upgrade notes under `delta-*/`), applied unless the query asks
+    /// for release notes. They repeat every feature's name and otherwise crowd
+    /// out the feature's own docs. 1.0 disables the demotion.
+    pub release_notes_weight: f64,
 }
 
 impl Default for SearchParams {
@@ -132,6 +137,7 @@ impl Default for SearchParams {
             column_weights: [1.0, 20.0, 2.0, 10.0],
             drop_stopwords: true,
             collapse_duplicates: true,
+            release_notes_weight: 0.5,
         }
     }
 }
@@ -148,8 +154,36 @@ impl SearchParams {
             column_weights: [1.0, 1.0, 1.0, 1.0],
             drop_stopwords: false,
             collapse_duplicates: false,
+            release_notes_weight: 1.0,
         }
     }
+}
+
+/// Whether a repo path is a release-notes page: the per-product notes under
+/// `release-notes/` or the combined upgrade notes under `delta-<from>-<to>/`.
+pub fn is_release_notes_path(path: &str) -> bool {
+    path.starts_with("release-notes/") || path.starts_with("delta-")
+}
+
+/// Whether the query is about release notes / upgrades, in which case
+/// release-note pages are not demoted.
+pub fn wants_release_notes(query: &str) -> bool {
+    let q = query
+        .to_lowercase()
+        .replace(['\u{2019}', '\''], "")
+        .replace('-', " ");
+    const CUES: &[&str] = &[
+        "release note",
+        "whats new",
+        "what is new",
+        "new in ",
+        "new features",
+        "upgrade",
+        "changes in",
+        "changed in",
+        "deprecat",
+    ];
+    CUES.iter().any(|c| q.contains(c))
 }
 
 /// One arm's candidate: `(chunk id, file path)`.
@@ -277,7 +311,7 @@ impl IndexStore {
         let pool = p.pool.max(n * 4);
         let fts = self.fts_arm(query_text, pool, p)?;
         let vec_hits = self.vector_arm(query_vec, pool)?;
-        self.fuse(&fts, &vec_hits, n, p)
+        self.fuse(query_text, &fts, &vec_hits, n, p)
     }
 
     /// BM25 arm: up to `pool` `(chunk id, path)` pairs, best first.
@@ -336,6 +370,7 @@ impl IndexStore {
     /// Fuse the two arms with weighted RRF and resolve the top `n` hits.
     pub fn fuse(
         &self,
+        query_text: &str,
         fts: &[Candidate],
         vec_hits: &[Candidate],
         n: usize,
@@ -347,6 +382,8 @@ impl IndexStore {
         // Insertion order is kept for deterministic tie-breaking.
         let mut scores: HashMap<String, f64> = HashMap::new();
         let mut rep: HashMap<String, i64> = HashMap::new();
+        let demote = p.release_notes_weight < 1.0 && !wants_release_notes(query_text);
+        let mut demoted: HashSet<String> = HashSet::new();
         let mut order: Vec<String> = Vec::new();
         for (arm, weight) in [(fts, p.w_fts), (vec_hits, p.w_vec)] {
             let mut rank = 0usize;
@@ -364,12 +401,20 @@ impl IndexStore {
                 if !scores.contains_key(&key) {
                     order.push(key.clone());
                     rep.insert(key.clone(), *rid);
+                    if demote && is_release_notes_path(path) {
+                        demoted.insert(key.clone());
+                    }
                 }
                 *scores.entry(key).or_insert(0.0) += weight / (p.rrf_k + rank as f64);
             }
         }
         if scores.is_empty() {
             return Ok(Vec::new());
+        }
+        for key in &demoted {
+            if let Some(s) = scores.get_mut(key) {
+                *s *= p.release_notes_weight;
+            }
         }
 
         // Stable sort by score desc; equal scores keep first-seen order.
@@ -575,7 +620,7 @@ mod tests {
         let p = SearchParams::default();
         let fts = store.fts_arm("zebra", 40, &p).unwrap();
         assert_eq!(fts.len(), 4); // chunk-level candidates
-        let hits = store.fuse(&fts, &[], 10, &p).unwrap();
+        let hits = store.fuse("zebra", &fts, &[], 10, &p).unwrap();
         let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&"long.md") && paths.contains(&"other.md"));
@@ -587,6 +632,20 @@ mod tests {
             .query_with("identical", &unit(3), 10, &SearchParams::legacy())
             .unwrap();
         assert_eq!(legacy.iter().filter(|h| h.title == "Same Topic").count(), 2);
+
+        // Release notes: detected by path, demotion skipped for upgrade queries.
+        assert!(is_release_notes_path(
+            "delta-zurich-brazil/brazil-zurich-itsm-release-notes.md"
+        ));
+        assert!(is_release_notes_path(
+            "release-notes/access-management-rn.md"
+        ));
+        assert!(!is_release_notes_path(
+            "it-service-management/dpr-generate-release-notes.md"
+        ));
+        assert!(wants_release_notes("What’s new in Brazil for ITSM"));
+        assert!(wants_release_notes("ITSM release-notes"));
+        assert!(!wants_release_notes("create an incident"));
 
         // The description column is searchable.
         let hits = store.query_with("kangaroo", &unit(7), 10, &p).unwrap();
