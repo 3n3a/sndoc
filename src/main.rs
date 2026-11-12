@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
+use sndoc::core::query_log::{self, Source};
 use sndoc::core::{constants, fetch as docs, format, repo, search};
 use sndoc::{index as indexer, state};
 
@@ -112,7 +113,27 @@ enum Command {
     },
     /// Check the environment: sqlite-vec + FTS5, index, and clone status.
     Doctor,
+    /// Summarise the query log (SNDOC_QUERY_LOG=1) and export candidate
+    /// eval pairs: a search followed, in the same session, by a fetch of one
+    /// of its results.
+    #[command(name = "query-log")]
+    QueryLog {
+        /// Write candidate pairs as eval TSV (manual<TAB>query<TAB>path) to
+        /// this file; review them before adding to examples/eval-questions.tsv.
+        #[arg(long)]
+        export: Option<std::path::PathBuf>,
+        /// Max minutes between a search and the fetch it led to.
+        #[arg(long, default_value_t = 30)]
+        window_mins: i64,
+        /// Emit JSON (summary + pairs).
+        #[arg(long)]
+        json: bool,
+    },
 }
+
+/// The CLI has no client sessions: all local commands form one session, and
+/// the query log pairs a search with later fetches by time window.
+const CLI_SESSION: &str = "cli";
 
 fn dump<T: Serialize>(v: &T) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
@@ -158,6 +179,7 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Search { query, limit, json } => {
             state::ensure_ready(no_index, false, true, true)?;
             let hits = search::search(query, (*limit).max(0) as usize)?;
+            query_log::log_search(Source::Cli, CLI_SESSION, query, &hits);
             if *json {
                 println!("{}", dump(&hits));
             } else {
@@ -171,7 +193,9 @@ fn run(cli: &Cli) -> Result<()> {
             json,
         } => {
             state::ensure_ready(no_index, false, false, false)?;
-            let res = docs::fetch(path, version.as_deref(), *live)?;
+            let res = docs::fetch(path, version.as_deref(), *live);
+            query_log::log_fetch(Source::Cli, CLI_SESSION, path, version.as_deref(), &res);
+            let res = res?;
             if *json {
                 println!("{}", dump(&res));
             } else {
@@ -180,7 +204,9 @@ fn run(cli: &Cli) -> Result<()> {
         }
         Command::FetchUrl { url, live, json } => {
             state::ensure_ready(no_index, false, false, false)?;
-            let res = docs::fetch(url, None, *live)?;
+            let res = docs::fetch(url, None, *live);
+            query_log::log_fetch(Source::Cli, CLI_SESSION, url, None, &res);
+            let res = res?;
             if *json {
                 println!("{}", dump(&res));
             } else {
@@ -239,6 +265,50 @@ fn run(cli: &Cli) -> Result<()> {
         Command::Doctor => {
             return doctor();
         }
+        Command::QueryLog {
+            export,
+            window_mins,
+            json,
+        } => {
+            let summary = query_log::summary(*window_mins)?;
+            let pairs = query_log::labelled_pairs(*window_mins)?;
+            if let Some(file) = export {
+                std::fs::write(file, query_log::pairs_to_tsv(&pairs))?;
+                eprintln!(
+                    "wrote {} candidate pairs to {}",
+                    pairs.len(),
+                    file.display()
+                );
+            }
+            if *json {
+                println!(
+                    "{}",
+                    dump(&serde_json::json!({ "summary": summary, "pairs": pairs }))
+                );
+            } else {
+                println!("query log: {}", query_log::log_path().display());
+                println!(
+                    "  {} searches ({} distinct), {} fetches, {} sessions, {} .. {}",
+                    summary.searches,
+                    summary.distinct_queries,
+                    summary.fetches,
+                    summary.sessions,
+                    summary.first_event.as_deref().unwrap_or("-"),
+                    summary.last_event.as_deref().unwrap_or("-")
+                );
+                println!(
+                    "  {} searches led to fetching one of their results -> {} candidate pairs",
+                    summary.searches_with_followup_fetch,
+                    pairs.len()
+                );
+                for p in pairs.iter().take(15) {
+                    println!(
+                        "  [rank {:>2}, {}x] {}  ->  {}",
+                        p.rank, p.sessions, p.query, p.path
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -294,6 +364,11 @@ fn doctor() -> Result<()> {
     );
     println!("[..] git url: {}", constants::git_url());
     println!("[..] embed model: {}", constants::embed_model());
+    println!(
+        "[..] query log: {} ({})",
+        if query_log::enabled() { "on" } else { "off" },
+        query_log::log_path().display()
+    );
     println!(
         "[..] fetch source: {}",
         if constants::fetch_live_default() {

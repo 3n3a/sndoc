@@ -15,8 +15,8 @@
 # Needs the docs clone in the sndoc data dir (run `sndoc --no-index update`
 # once; honours SNDOC_DATA_DIR). After training, try it locally with
 #   SNDOC_EMBED_MODEL=$PWD/tools/train-vectors/out/potion-sn-ft sndoc index --force
-# and point DEFAULT_EMBED_MODEL (src/core/constants.rs) at a new release tag
-# when publishing a new model.
+# and update FINETUNED_EMBED_MODEL (src/core/constants.rs) when publishing a
+# new release tag.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -44,7 +44,7 @@ if [ -n "${PUBLISH_TAG:-}" ]; then
   if ! gh release view "$PUBLISH_TAG" >/dev/null 2>&1; then
     gh release create "$PUBLISH_TAG" --latest=false \
       --title "Embedding model $PUBLISH_TAG" \
-      --notes "Fine-tuned static embeddings for sndoc (model2vec format, 512-dim), trained with tools/train-vectors from $BASE_REPO. Downloaded automatically by sndoc; not a CLI release."
+      --notes "Fine-tuned static embeddings for sndoc (model2vec format, 512-dim), trained with tools/train-vectors from $BASE_REPO. Opt-in: SNDOC_EMBED_MODEL=https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/download/$PUBLISH_TAG. Not a CLI release."
   fi
   gh release upload "$PUBLISH_TAG" --clobber \
     "$MODEL/config.json" "$MODEL/tokenizer.json" "$MODEL/model.safetensors" "$MODEL/README.md"

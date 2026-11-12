@@ -42,8 +42,9 @@ tools/train-vectors/train.sh       # -> tools/train-vectors/out/potion-sn-ft (gi
 # try it locally (the index is rebuilt automatically for a new model)
 SNDOC_EMBED_MODEL=$PWD/tools/train-vectors/out/potion-sn-ft sndoc index --force
 
-# publish as a GitHub release (never marked "latest"), then point
-# DEFAULT_EMBED_MODEL in src/core/constants.rs at the new tag
+# publish as a GitHub release (never marked "latest"); update
+# FINETUNED_EMBED_MODEL in src/core/constants.rs (and DEFAULT_EMBED_MODEL if it
+# should become the default)
 PUBLISH_TAG=embed-model-v2 tools/train-vectors/train.sh
 ```
 
@@ -69,7 +70,11 @@ Measured with `examples/eval.rs` (MRR; R@10 in brackets) on two sets:
 | **v0.6 ranking, fine-tuned model** | **0.873** | **0.959** | **0.814** | **0.505 (0.89)** |
 | vector arm alone: base → fine-tuned | 0.619 → 0.730 | 0.767 → 0.887 | 0.316 → 0.562 | |
 
-The published model (`embed-model-v1`) is the same recipe trained on all
-pages, which is what the real-question column uses. The vector weight
+The published model (`embed-model-v1`, opt-in via `SNDOC_EMBED_MODEL`) is the
+same recipe trained on all pages, which is what the real-question column uses.
+On real questions its gain is one question out of 27, which is within noise,
+and the base model's vector arm alone does better on them than the
+fine-tuned one's. That is why it is not the default: build up the real-question
+set from the [query log](../../README.md#query-log) first, then re-evaluate. The vector weight
 (`w_vec = 0.3`) was re-tuned for it on a separate sample: higher weights lose
 on the synthetic sets and gain at most one question on the real set.
