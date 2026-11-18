@@ -241,34 +241,61 @@ pub fn resolve_latest_branch() -> String {
         .unwrap_or_else(|| DEFAULT_BRANCH.to_string())
 }
 
-/// Release branches with the latest flagged and pinned first; the rest follow
-/// newest-first by tip commit date.
+/// Order release branches newest first: `latest` (origin/HEAD) first, falling
+/// back to the newest tip commit when it's missing or unknown. The rest go by
+/// how far their first letter lies *behind* the latest's in the alphabet,
+/// wrapping after A — ServiceNow names releases A..Z and then starts over, so
+/// after Brazil comes Australia, then Zurich, Yokohama, Xanadu. Tip commit
+/// date alone is not release order (old branches get backport commits); it
+/// only breaks ties between same-letter releases.
+pub fn order_releases(latest: Option<&str>, branches: Vec<(String, i64)>) -> Vec<String> {
+    let mut by_tip = branches;
+    by_tip.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let latest = match latest.filter(|l| by_tip.iter().any(|(n, _)| n == l)) {
+        Some(l) => l.to_string(),
+        None => match by_tip.first() {
+            Some((n, _)) => n.clone(),
+            None => return Vec::new(),
+        },
+    };
+    let letter = |name: &str| {
+        name.chars()
+            .next()
+            .filter(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_ascii_lowercase() as i32 - 'a' as i32)
+    };
+    let anchor = letter(&latest);
+    // Steps back from the latest's letter: 1 = previous letter, ..., 26 = the
+    // same letter one full cycle ago; non-letter names go last.
+    let distance = |name: &str| match (anchor, letter(name)) {
+        (Some(a), Some(l)) => match (a - l).rem_euclid(26) {
+            0 => 26,
+            d => d,
+        },
+        _ => 27,
+    };
+    let mut rest: Vec<(String, i64)> = by_tip.into_iter().filter(|(n, _)| *n != latest).collect();
+    // Stable sort: keeps the newest-tip-first order within the same distance.
+    rest.sort_by_key(|(n, _)| distance(n));
+    std::iter::once(latest)
+        .chain(rest.into_iter().map(|(n, _)| n))
+        .collect()
+}
+
+/// Release branches newest first (see [`order_releases`]), latest flagged.
 pub fn list_versions() -> Vec<VersionInfo> {
     let repo = match open() {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
-    let by_date = branches_by_date(&repo);
-    let latest = default_branch(&repo).or_else(|| by_date.first().cloned());
-    let mut ordered: Vec<String> = Vec::new();
-    if let Some(l) = &latest {
-        if by_date.contains(l) {
-            ordered.push(l.clone());
-        }
-    }
-    for b in &by_date {
-        if Some(b) != latest.as_ref() {
-            ordered.push(b.clone());
-        }
-    }
-    ordered
+    let branches = release_branches_with_time(&repo).unwrap_or_default();
+    let latest = default_branch(&repo);
+    order_releases(latest.as_deref(), branches)
         .into_iter()
-        .map(|b| {
-            let is_latest = Some(&b) == latest.as_ref();
-            VersionInfo {
-                release: b,
-                is_latest,
-            }
+        .enumerate()
+        .map(|(i, release)| VersionInfo {
+            release,
+            is_latest: i == 0,
         })
         .collect()
 }
@@ -459,6 +486,59 @@ pub fn read_doc_from_clone(repo_path: &str, branch: &str) -> Option<RawDoc> {
 
 #[cfg(test)]
 mod tests {
+    fn branches(v: &[(&str, i64)]) -> Vec<(String, i64)> {
+        v.iter().map(|(n, t)| (n.to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn order_releases_wraps_alphabet_not_tip_date() {
+        // zurich got a backport commit, so its tip is the newest of all.
+        let b = branches(&[
+            ("xanadu", 10),
+            ("yokohama", 40),
+            ("zurich", 90),
+            ("australia", 50),
+            ("brazil", 20),
+        ]);
+        assert_eq!(
+            order_releases(Some("brazil"), b),
+            ["brazil", "australia", "zurich", "yokohama", "xanadu"]
+        );
+    }
+
+    #[test]
+    fn order_releases_without_latest_uses_newest_tip() {
+        let b = branches(&[("zurich", 10), ("australia", 30), ("yokohama", 20)]);
+        assert_eq!(
+            order_releases(None, b.clone()),
+            ["australia", "zurich", "yokohama"]
+        );
+        // An unknown latest is ignored the same way.
+        assert_eq!(
+            order_releases(Some("nope"), b),
+            ["australia", "zurich", "yokohama"]
+        );
+        assert!(order_releases(Some("brazil"), Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn order_releases_same_letter_breaks_tie_by_tip() {
+        // Two releases sharing a letter (a full alphabet cycle apart): the
+        // one with the newer tip is treated as newer; the latest's own letter
+        // one cycle back sorts after every other letter.
+        let b = branches(&[
+            ("brazil", 100),
+            ("aspen", 5),
+            ("australia", 50),
+            ("berlin", 1),
+            ("zurich", 40),
+        ]);
+        assert_eq!(
+            order_releases(Some("brazil"), b),
+            ["brazil", "australia", "aspen", "zurich", "berlin"]
+        );
+    }
+
     use super::*;
 
     fn releases() -> HashSet<String> {

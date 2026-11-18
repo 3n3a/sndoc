@@ -102,7 +102,7 @@ sndoc list-versions --json
                                                   │  data dir: index/latest.db + manifest.json
  search ─┐  core/search.rs ── core/index_store.rs (rusqlite + sqlite-vec, hybrid RRF)
  fetch  ─┤                 └─ core/embed.rs (model2vec-rs query embedding)
- list   ─┘  core/repo.rs ── libgit2 refs (versions, newest by commit date) · raw.githubusercontent.com (--live)
+ list   ─┘  core/repo.rs ── libgit2 refs (versions, newest first) · raw.githubusercontent.com (--live)
 ```
 
 - **Index.** On change, the CLI reads every `markdown/**` file on the latest
@@ -135,9 +135,27 @@ sndoc list-versions --json
   and the embedding model; if any of them changes, the next run rebuilds it.
 - **Fetch & versions.** Markdown is read from the local clone's object store on
   the requested branch (latest by default), or from `raw.githubusercontent.com`
-  with `--live`. Versions are the clone's release branches, ordered
-  **newest-first by tip commit date** (no hardcoded release list); the repo's
-  default branch (origin/HEAD) is the latest.
+  with `--live`. Versions are the clone's release branches, **newest first**
+  (no hardcoded release list). The repo's default branch (origin/HEAD) is the
+  latest. The others follow in release order: names run A–Z and then wrap
+  (Xanadu, Yokohama, Zurich, Australia, Brazil), so each is placed by how far
+  its first letter lies behind the latest's. Tip commit date is only a
+  tie-break, because older branches get backport commits. An unknown
+  `--version` is an error, never a silent switch to the latest.
+- **When a fetch fails.** If the fetch fails, retry the same `path` with the
+  next older release from `list-versions` (newest first), one release at a
+  time. If every release fails, the path is probably wrong: search for the
+  topic title, fetch the matching result's `path`, and tell the user which
+  path and release the content came from. Search runs once. If no hit's title
+  matches, stop and report the path, the releases tried and the query. Never
+  order releases by name, since Australia is newer than Zurich. Examples:
+  - `fetch <path>` fails on brazil (latest) → `fetch <path> --version australia`
+    succeeds → answer "from australia (older than latest brazil; may be out of date)".
+  - The link target `it-service-management/now-assist-itsm-aiagents-voice.md`
+    fails on every release → `search "Now Assist ITSM AI agents voice"` →
+    fetch the returned
+    `it-service-management/now-assist-for-it-service-management-itsm/now-assist-itsm-aiagents-voice.md`
+    → report that the original path failed and give the corrected one.
 
 ## Embedding model
 

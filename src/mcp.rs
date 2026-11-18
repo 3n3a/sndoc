@@ -104,7 +104,9 @@ impl Sndoc {
         description = "Semantic + keyword search over the official ServiceNow product \
                        documentation (the latest release). Returns top matching topics with a \
                        repo `path` to fetch. Use for any question about how a ServiceNow \
-                       feature, API, table, or behavior works."
+                       feature, API, table, or behavior works. Also use this to find the correct \
+                       `path` when a fetch fails on every release, for example a broken link \
+                       target taken from another doc page."
     )]
     async fn search_servicenow_docs(
         &self,
@@ -125,7 +127,12 @@ impl Sndoc {
         description = "Fetch a ServiceNow documentation topic as clean Markdown by its `path` \
                        (from a search result). Optionally pass `version` (a release name from \
                        list_servicenow_versions) to read a specific release; defaults to latest. \
-                       Reads the doc live from GitHub."
+                       Reads the doc live from GitHub. If the fetch fails, retry the same `path` \
+                       with the next older release from list_servicenow_versions (newest first), \
+                       one release at a time. If every release fails, the path is probably wrong: \
+                       search for the topic title with search_servicenow_docs, fetch the matching \
+                       result's `path`, and tell the user which path and release the content came \
+                       from."
     )]
     async fn fetch_servicenow_doc(
         &self,
@@ -145,7 +152,9 @@ impl Sndoc {
         name = "fetch_servicenow_doc_by_url",
         description = "Fetch a ServiceNow documentation topic as clean Markdown, given a \
                        docs.servicenow.com URL or an 'r/...' reader path. Reads the doc live \
-                       from GitHub."
+                       from GitHub. If this fails, fetch the topic's `path` with \
+                       fetch_servicenow_doc and apply the same fallback: older releases first, \
+                       then search for the topic title."
     )]
     async fn fetch_servicenow_doc_by_url(
         &self,
@@ -163,8 +172,11 @@ impl Sndoc {
 
     #[tool(
         name = "list_servicenow_versions",
-        description = "List the available ServiceNow documentation versions (release branches), \
-                       newest first. Use the names with `fetch_servicenow_doc`'s `version` arg."
+        description = "List the available ServiceNow documentation versions (release branches). \
+                       Use the names with `fetch_servicenow_doc`'s `version` arg. \
+                       The list is newest first. This is also the fallback order for failed \
+                       fetches. Release names wrap alphabetically (Australia is newer than \
+                       Zurich), so never sort them by name."
     )]
     async fn list_servicenow_versions(&self) -> Result<String, ErrorData> {
         blocking(|| Ok(format_versions(&docs::list_versions()))).await
@@ -293,4 +305,41 @@ async fn require_bearer_token(
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn description(name: &str) -> String {
+        Sndoc::new()
+            .tool_router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.description.map(|d| d.to_string()))
+            .unwrap_or_else(|| panic!("tool {name} missing"))
+    }
+
+    #[test]
+    fn tool_descriptions_document_fetch_fallback() {
+        let fetch = description("fetch_servicenow_doc");
+        assert!(fetch.contains("next older release"));
+        assert!(fetch.contains("If every release fails"));
+        assert!(fetch.contains("search_servicenow_docs"));
+        let versions = description("list_servicenow_versions");
+        assert!(versions.contains("fallback order for failed fetches"));
+        assert!(versions.contains("never sort them by name"));
+        assert!(description("search_servicenow_docs").contains("fails on every release"));
+        assert!(description("fetch_servicenow_doc_by_url")
+            .contains("older releases first, then search"));
+        for t in Sndoc::new().tool_router.list_all() {
+            let d = t.description.unwrap_or_default().to_lowercase();
+            assert!(
+                !d.contains("second oldest") && !d.contains("next newest"),
+                "{}",
+                t.name
+            );
+        }
+    }
 }
