@@ -22,9 +22,22 @@ pub fn fetch(path_or_url: &str, version: Option<&str>, live: bool) -> Result<Fet
         bail!("Could not derive a doc path from '{path_or_url}'.");
     }
 
-    let branch = match version.map(|v| v.to_lowercase()) {
+    let branch = match version
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty())
+    {
         Some(vl) if releases.contains(&vl) => vl,
-        _ => match &rp.release_in_path {
+        // No clone to validate against (live-only): trust the caller.
+        Some(vl) if releases.is_empty() => vl,
+        // Never silently swap an unknown release for the latest one.
+        Some(vl) => {
+            let available: Vec<String> = list_versions().into_iter().map(|v| v.release).collect();
+            bail!(
+                "Unknown version '{vl}'. Available (newest first): {}.",
+                available.join(", ")
+            )
+        }
+        None => match &rp.release_in_path {
             Some(r) => r.clone(),
             None => repo::resolve_latest_branch(),
         },
@@ -44,8 +57,10 @@ pub fn fetch(path_or_url: &str, version: Option<&str>, live: bool) -> Result<Fet
     let raw = match raw {
         Some(r) => r,
         None => bail!(
-            "No doc found at '{}' on branch '{}'. Check the path, try a different \
-             version (`sndoc list-versions`), or read live with `--live`.",
+            "No doc found at '{}' on release '{}'. Retry the same path with the next \
+             older release from list-versions (newest first). If every release fails, the \
+             path is probably wrong: search for the topic title and fetch the matching \
+             result's path.",
             rp.repo_path,
             branch
         ),
